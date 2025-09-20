@@ -5,7 +5,7 @@ pub const GenBackend = enum { RecursiveDescent };
 pub const GenOptions = struct {
     backend: GenBackend = .RecursiveDescent,
     module_name: []const u8 = "generated",
-    start_rule: []const u8, // required
+    start_rule: []const u8,
     emit_cli_demo: bool = false,
 };
 
@@ -23,7 +23,6 @@ pub const Generated = struct {
 };
 
 pub fn emit(alloc: std.mem.Allocator, grammar: *const ast.AST, opts: GenOptions) !Generated {
-    // Keep validations intact so tests still exercise them.
     try grammar.ensureNoDuplicates();
     try grammar.ensureDefinedSymbols();
     try grammar.checkReachability(opts.start_rule);
