@@ -1,0 +1,429 @@
+(* ====================== Core / Sessions / Transactions ====================== *)
+program ::= { program_activity | session_close_command } 'EOF' ;
+
+program_activity ::= session_activity | transaction_activity ;
+
+session_activity ::= session_reset_command | session_set_command ;
+
+session_set_command ::=
+    'SESSION' 'SET'
+    ( session_set_schema_clause
+    | session_set_graph_clause
+    | session_set_time_zone_clause
+    | session_set_parameter_clause ) ;
+
+session_set_schema_clause ::= 'SCHEMA' schema_reference ;
+session_set_graph_clause  ::= 'PROPERTY' 'GRAPH' graph_expression ;
+session_set_time_zone_clause ::= 'TIME' 'ZONE' set_time_zone_value ;
+set_time_zone_value ::= time_zone_string ;
+
+session_set_parameter_clause ::=
+    ( 'PROPERTY' 'GRAPH' | 'BINDING' 'TABLE' | 'VALUE' )
+    session_set_parameter_name
+    ( opt_typed_graph_initializer
+    | opt_typed_binding_table_initializer
+    | opt_typed_value_initializer ) ;
+
+session_set_parameter_name ::= \[ 'IF' 'NOT' 'EXISTS' ] session_parameter_specification ;
+
+session_reset_command ::= 'SESSION' 'RESET' session_reset_arguments ;
+session_reset_arguments ::=
+      'ALL' 'PARAMETERS'
+    | 'CHARACTERISTICS'
+    | 'SCHEMA'
+    | 'PROPERTY' 'GRAPH'
+    | 'TIME' 'ZONE'
+    | 'PARAMETER' session_parameter_specification ;
+
+session_close_command ::= 'SESSION' 'CLOSE' ;
+
+session_parameter_specification ::= GENERAL_PARAMETER_REFERENCE ;
+
+transaction_activity ::=
+    start_transaction_command procedure_specification end_transaction_command ;
+
+start_transaction_command ::= 'START' 'TRANSACTION' \[ transaction_characteristics ] ;
+end_transaction_command   ::= 'ROLLBACK' | 'COMMIT' ;
+
+transaction_characteristics ::= transaction_mode { ',' transaction_mode } ;
+transaction_mode ::= transaction_access_mode ;
+transaction_access_mode ::= 'READ' 'ONLY' | 'READ' 'WRITE' ;
+
+(* ============================== Procedures / Blocks ============================== *)
+nested_procedure_specification ::= '{' procedure_specification '}' ;
+procedure_specification ::= procedure_body ;
+procedure_body ::= \[ at_schema_clause ] { binding_variable_definition } statement_block ;
+at_schema_clause ::= 'AT' 'SCHEMA' schema_reference ;
+
+binding_variable_definition ::=
+      graph_variable_definition
+    | binding_table_variable_definition
+    | value_variable_definition ;
+
+graph_variable_definition ::=
+    'PROPERTY' 'GRAPH' binding_variable opt_typed_graph_initializer ;
+binding_table_variable_definition ::=
+    'BINDING' 'TABLE' binding_variable opt_typed_binding_table_initializer ;
+value_variable_definition ::=
+    'VALUE' binding_variable opt_typed_value_initializer ;
+
+opt_typed_graph_initializer         ::= \[ typed graph_reference_value_type ] graph_initializer ;
+opt_typed_binding_table_initializer  ::= \[ typed binding_table_reference_value_type ] binding_table_initializer ;
+opt_typed_value_initializer          ::= \[ typed value_type ] value_initializer ;
+typed ::= /* marker; see lexical typing rules */ ;
+
+graph_initializer         ::= '=' graph_expression ;
+binding_table_initializer  ::= '=' binding_table_expression ;
+value_initializer          ::= '=' value_expression ;
+
+binding_variable ::= VARIABLE ;
+
+(* ============== Statement block; NEXT … YIELD sequencing ================= *)
+statement_block ::= statement { 'NEXT' yield_clause statement } ;
+statement       ::= linear_catalog_modifying_statement
+                  | linear_data_modifying_statement
+                  | composite_query_statement ;
+
+yield_clause ::= 'YIELD' yield_item_list ;
+yield_item_list ::= yield_item { ',' yield_item } ;
+yield_item ::= ( IDENTIFIER | result_alias ) [ 'AS' result_alias ] ;
+
+(* ============================== Catalog DDL ============================== *)
+linear_catalog_modifying_statement ::= simple_catalog_modifying_statement ;
+simple_catalog_modifying_statement ::=
+      primitive_catalog_modifying_statement
+    | call_catalog_modifying_procedure_statement ;
+
+primitive_catalog_modifying_statement ::=
+      create_schema_statement
+    | drop_schema_statement
+    | create_graph_statement
+    | drop_graph_statement
+    | create_graph_type_statement
+    | drop_graph_type_statement ;
+
+create_schema_statement ::= 'CREATE' 'SCHEMA' \[ 'IF' 'NOT' 'EXISTS' ] catalog_schema_parent_and_name ;
+drop_schema_statement   ::= 'DROP'   'SCHEMA' \[ 'IF' 'EXISTS' ]        catalog_schema_parent_and_name ;
+
+create_graph_statement ::=
+    'CREATE' 'PROPERTY' 'GRAPH'
+    \[ 'IF' 'NOT' 'EXISTS' ]
+    \[ 'OR' 'REPLACE' ]
+    'PROPERTY' 'GRAPH' catalog_graph_parent_and_name
+    ( open_graph_type | of_graph_type )
+    \[ graph_source ] ;
+
+open_graph_type ::= typed 'ANY' 'PROPERTY' 'GRAPH' ;
+
+of_graph_type ::=
+      graph_type_like_graph
+    | ( typed graph_type_reference )
+    | ( typed 'PROPERTY' 'GRAPH' nested_graph_type_specification ) ;
+
+graph_type_like_graph ::= 'LIKE' graph_expression ;
+graph_source ::= ( 'AS' | 'COPY' 'OF' ) graph_expression ;
+
+drop_graph_statement ::=
+    'DROP' 'PROPERTY' 'GRAPH' \[ 'IF' 'EXISTS' ] catalog_graph_parent_and_name ;
+
+create_graph_type_statement ::=
+    'CREATE' 'PROPERTY' 'GRAPH' 'TYPE'
+    \[ 'IF' 'NOT' 'EXISTS' ]
+    \[ 'OR' 'REPLACE' ]
+    'PROPERTY' 'GRAPH' 'TYPE' catalog_graph_type_parent_and_name
+    graph_type_source ;
+
+graph_type_source ::=
+      'AS' copy_of_graph_type
+    | 'AS' nested_graph_type_specification
+    | graph_type_like_graph ;
+
+copy_of_graph_type ::= 'COPY' 'OF' graph_type_reference ;
+drop_graph_type_statement ::=
+    'DROP' 'PROPERTY' 'GRAPH' 'TYPE'
+    \[ 'IF' 'EXISTS' ] catalog_graph_type_parent_and_name ;
+
+call_catalog_modifying_procedure_statement ::= call_procedure_statement ;
+
+(* ============================= Data Modifying ============================= *)
+linear_data_modifying_statement ::=
+      focused_linear_data_modifying_statement
+    | ambient_linear_data_modifying_statement ;
+
+focused_linear_data_modifying_statement ::=
+      focused_linear_data_modifying_statement_body
+    | focused_nested_data_modifying_procedure_specification ;
+
+focused_linear_data_modifying_statement_body ::=
+    use_graph_clause simple_linear_data_accessing_statement primitive_result_statement ;
+
+focused_nested_data_modifying_procedure_specification ::=
+    use_graph_clause nested_data_modifying_procedure_specification ;
+
+ambient_linear_data_modifying_statement ::=
+      ambient_linear_data_modifying_statement_body
+    | nested_data_modifying_procedure_specification ;
+
+ambient_linear_data_modifying_statement_body ::=
+    simple_linear_data_accessing_statement primitive_result_statement ;
+
+nested_data_modifying_procedure_specification ::= '{' procedure_specification '}' ;
+
+use_graph_clause ::= 'USE' 'GRAPH' graph_expression ;
+
+simple_linear_data_accessing_statement ::= simple_data_accessing_statement ;
+simple_data_accessing_statement ::= simple_query_statement | simple_data_modifying_statement ;
+
+simple_data_modifying_statement ::=
+      primitive_data_modifying_statement
+    | call_data_modifying_procedure_statement ;
+
+primitive_data_modifying_statement ::=
+      insert_statement
+    | set_statement
+    | remove_statement
+    | delete_statement ;
+
+insert_statement ::= 'INSERT' insert_graph_pattern ;
+
+set_statement    ::= 'SET' set_item_list ;
+set_item_list    ::= set_item { ',' set_item } ;
+set_item         ::= set_property_item | set_all_properties_item | set_label_item ;
+
+set_property_item ::=
+    binding_variable_reference '.' property_name '=' value_expression ;
+
+set_all_properties_item ::=
+    binding_variable_reference '=' '{' property_key_value_pair_list '}' ;
+
+set_label_item ::= binding_variable_reference ':' label_name ;
+
+remove_statement ::= 'REMOVE' remove_item_list ;
+remove_item_list ::= remove_item { ',' remove_item } ;
+remove_item      ::= remove_property_item | remove_label_item ;
+
+remove_property_item ::= binding_variable_reference '.' property_name ;
+remove_label_item    ::= binding_variable_reference ':' label_name ;
+
+delete_statement ::=
+    ( 'DETACH' | 'NODETACH' ) 'DELETE' delete_item_list ;
+delete_item_list ::= delete_item { ',' delete_item } ;
+delete_item      ::= value_expression ;
+
+call_data_modifying_procedure_statement ::= call_procedure_statement ;
+
+(* =============================== Query model =============================== *)
+composite_query_statement ::= composite_query_expression ;
+
+composite_query_expression ::=
+    linear_query_expression
+    { set_operator linear_query_expression } ;
+
+set_operator ::= 'UNION' [ 'ALL' ] | 'INTERSECT' | 'EXCEPT' ;
+
+linear_query_expression ::=
+    \[ use_graph_clause ] simple_query_statement ;
+
+simple_query_statement ::=
+    match_statement pipeline_tail ;
+
+(* “Pipeline tail”: RETURN… or ORDER BY/PAGE or FINISH, per spec *)
+pipeline_tail ::= primitive_result_statement ;
+
+primitive_result_statement ::=
+      return_statement \[ order_by_and_page_statement ]
+    | 'FINISH' ;
+
+return_statement ::= 'RETURN' return_body ;
+return_body ::= \[ 'DISTINCT' ] result_item_list ;
+result_item_list ::= result_item { ',' result_item } ;
+result_item ::= value_expression \[ 'AS' result_alias ] ;
+result_alias ::= IDENTIFIER ;
+
+order_by_and_page_statement ::=
+    'ORDER' 'BY' order_key { ',' order_key } \[ page_spec ] ;
+
+order_key ::= sort_key \[ ordering ] \[ nulls_order ] ;
+sort_key  ::= value_expression ;
+ordering  ::= 'ASC' | 'DESC' ;
+nulls_order ::= 'NULLS' ( 'FIRST' | 'LAST' ) ;
+
+page_spec ::=
+      ( 'LIMIT' value_expression \[ ( 'SKIP' | 'OFFSET' ) value_expression ] )
+    | ( ( 'SKIP' | 'OFFSET' ) value_expression \[ 'LIMIT' value_expression ] ) ;
+
+(* =============================== MATCH & patterns =============================== *)
+match_statement ::= 'MATCH' match_body ;
+match_body ::= graph_pattern \[ where_clause ] ;
+
+where_clause ::= 'WHERE' boolean_expression ;
+
+graph_pattern ::= pattern_element { ',' pattern_element } ;
+
+pattern_element ::= node_pattern { relationship_chain } ;
+relationship_chain ::= relationship_pattern node_pattern ;
+
+node_pattern ::=
+    '(' \[ binding_variable ]
+        \[ node_labels ]
+        \[ properties ]
+    ')' ;
+
+node_labels ::= ':' label_name { ':' label_name } ;
+
+relationship_pattern ::=
+      '-' relationship_detail '->'
+    | '<-' relationship_detail '-'
+    | '-' relationship_detail '-' ;
+
+relationship_detail ::=
+    '[' \[ binding_variable ]
+        \[ relationship_types ]
+        \[ path_length ]
+        \[ properties ]
+    ']' ;
+
+relationship_types ::= ':' type_name { '|' type_name } ;
+
+path_length ::= '*' \[ path_range ] ;
+path_range  ::= \[ integer_literal ] \[ '..' \[ integer_literal ] ] ;
+
+properties ::= '{' \[ property_key_value_pair_list ] '}' ;
+property_key_value_pair_list ::=
+    property_key_value_pair { ',' property_key_value_pair } ;
+property_key_value_pair ::= property_name ':' value_expression ;
+
+insert_graph_pattern ::= graph_pattern ;
+
+binding_variable_reference ::= VARIABLE ;
+
+(* =========================== Calls / Object names =========================== *)
+call_procedure_statement ::=
+    'CALL' object_name '(' \[ argument_list ] ')' \[ yield_clause ] ;
+argument_list ::= value_expression { ',' value_expression } ;
+
+graph_expression ::=
+      graph_reference
+    | object_expression_primary
+    | object_name_or_binding_variable
+    | current_graph ;
+
+current_graph ::= 'CURRENT_PROPERTY_GRAPH' | 'CURRENT_GRAPH' ;
+
+binding_table_expression ::=
+      nested_binding_table_query_specification
+    | binding_table_reference
+    | object_expression_primary
+    | object_name_or_binding_variable ;
+
+nested_binding_table_query_specification ::= '{' procedure_specification '}' ;
+
+object_expression_primary ::=
+      VARIABLE
+    | value_expression_primary
+    | parenthesized_value_expression
+    | non_parenthesized_value_expression_primary_special_case ;
+
+object_name_or_binding_variable ::= qualified_name | VARIABLE ;
+
+(* ============================== Names & catalogs ============================== *)
+catalog_schema_parent_and_name        ::= qualified_name ;
+catalog_graph_parent_and_name         ::= qualified_name ;
+catalog_graph_type_parent_and_name    ::= qualified_name ;
+graph_reference                       ::= qualified_name ;
+graph_type_reference                  ::= qualified_name ;
+binding_table_reference               ::= qualified_name ;
+schema_reference                      ::= qualified_name ;
+object_name                           ::= qualified_name ;
+qualified_name                        ::= identifier { '.' identifier } ;
+
+label_name      ::= identifier_or_quoted ;
+type_name       ::= identifier_or_quoted ;
+property_name   ::= identifier_or_quoted ;
+result_name     ::= identifier_or_quoted ;
+identifier_or_quoted ::= IDENTIFIER | QUOTED_IDENTIFIER ;
+
+(* ============================ Value expressions ============================ *)
+boolean_expression ::= value_expression ;
+
+value_expression ::=
+      or_expression ;
+
+or_expression ::=
+      and_expression { 'OR' and_expression } ;
+
+and_expression ::=
+      not_expression { 'AND' not_expression } ;
+
+not_expression ::=
+      'NOT' not_expression
+    | is_expression ;
+
+(* “IS …” binds tighter than NOT per GQL spec discussions *)
+is_expression ::=
+      comparison_expression
+      \[ 'IS' \[ 'NOT' ] ( 'TRUE' | 'FALSE' | 'UNKNOWN' | 'NULL' ) ] ;
+
+comparison_expression ::=
+      concatenation_expression
+      \[ comparison_operator concatenation_expression ] ;
+
+comparison_operator ::= '=' | '<>' | '!=' | '<' | '<=' | '>' | '>=' ;
+
+concatenation_expression ::=
+      additive_expression { '||' additive_expression } ;
+
+additive_expression ::=
+      multiplicative_expression { ( '+' | '-' ) multiplicative_expression } ;
+
+multiplicative_expression ::=
+      unary_expression { ( '*' | '/' | '%' ) unary_expression } ;
+
+unary_expression ::=
+      ( '+' | '-' | 'NOT' ) unary_expression
+    | postfix_expression ;
+
+postfix_expression ::=
+      primary_expression
+      { property_access | function_call_suffix } ;
+
+property_access ::= '.' property_name ;
+
+function_call_suffix ::= '(' \[ argument_list ] ')' ;
+
+primary_expression ::=
+      literal
+    | VARIABLE
+    | parameter_reference
+    | parenthesized_value_expression ;
+
+parenthesized_value_expression ::= '(' value_expression ')' ;
+non_parenthesized_value_expression_primary_special_case ::= /* reserved for spec specifics */ ;
+
+value_expression_primary ::= primary_expression ;
+
+literal ::=
+      string_literal
+    | byte_string_literal
+    | numeric_literal
+    | 'NULL'
+    | 'TRUE'
+    | 'FALSE' ;
+
+numeric_literal ::= integer_literal | decimal_literal ;
+integer_literal ::= INTEGER ;
+decimal_literal ::= DECIMAL ;
+string_literal  ::= STRING ;
+byte_string_literal ::= BYTE_STRING ;
+
+parameter_reference ::= PARAM_REFERENCE ;
+
+(* ============================== Types (minimal) ============================== *)
+graph_reference_value_type         ::= type_name ;   (* placeholder: concrete graph ref types *)
+binding_table_reference_value_type ::= type_name ;
+value_type                         ::= type_name ;
+
+(* ============================== Tokens (bridge) ============================== *)
+(* The following symbolic terminals are provided by the lexer:
+   IDENTIFIER, QUOTED_IDENTIFIER, VARIABLE, GENERAL_PARAMETER_REFERENCE,
+   STRING, BYTE_STRING, INTEGER, DECIMAL, PARAM_REFERENCE, and all keywords. *)
