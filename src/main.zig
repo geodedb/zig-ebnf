@@ -6,7 +6,9 @@ const Version = "0.1.0";
 fn printUsage() void {
     std.debug.print(
         \\
-        \\zig-ebnf generate  --in <grammar.ebnf> --out <dir> --start <rule> [--module-name <name>]
+        \\zig-ebnf generate  (--in|--grammar) <grammar.ebnf> [--out <dir>] [--start <rule>] [--module-name <name>] [--permissive]
+        \\  (Positional form also accepted: zig-ebnf generate <grammar.ebnf>)
+        \\  Defaults: --out ./zig-ebnf-out, --start first-rule, --module-name generated
         \\zig-ebnf recognize --grammar <grammar.ebnf> --start <rule> --input <str>
         \\zig-ebnf version
         \\
@@ -43,35 +45,44 @@ pub fn main() !void {
 
 fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
     var in_path: ?[]const u8 = null;
-    var out_dir: ?[]const u8 = null;
+    var out_dir: []const u8 = "zig-ebnf-out";
     var start_rule: ?[]const u8 = null;
     var module_name: []const u8 = "generated";
+    var permissive = false;
 
+    // Collect positional (first non-flag) as grammar if --in/--grammar absent.
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
         const a = argv[i];
-        if (std.mem.eql(u8, a, "--in") and i + 1 < argv.len) {
+        if (std.mem.eql(u8, a, "--in") or std.mem.eql(u8, a, "--grammar")) {
+            if (i + 1 >= argv.len) return error.InvalidArgument;
             in_path = argv[i + 1];
             i += 1;
             continue;
-        }
-        if (std.mem.eql(u8, a, "--out") and i + 1 < argv.len) {
+        } else if (std.mem.eql(u8, a, "--out")) {
+            if (i + 1 >= argv.len) return error.InvalidArgument;
             out_dir = argv[i + 1];
             i += 1;
             continue;
-        }
-        if (std.mem.eql(u8, a, "--start") and i + 1 < argv.len) {
+        } else if (std.mem.eql(u8, a, "--start")) {
+            if (i + 1 >= argv.len) return error.InvalidArgument;
             start_rule = argv[i + 1];
             i += 1;
             continue;
-        }
-        if (std.mem.eql(u8, a, "--module-name") and i + 1 < argv.len) {
+        } else if (std.mem.eql(u8, a, "--module-name")) {
+            if (i + 1 >= argv.len) return error.InvalidArgument;
             module_name = argv[i + 1];
             i += 1;
             continue;
+        } else if (std.mem.eql(u8, a, "--permissive")) {
+            permissive = true;
+            continue;
+        } else if (a.len > 0 and a[0] != '-') {
+            // positional grammar if not set yet
+            if (in_path == null) in_path = a; // ignore extras
         }
     }
-    if (in_path == null or out_dir == null or start_rule == null) {
+    if (in_path == null) {
         printUsage();
         return error.InvalidArgument;
     }
@@ -82,22 +93,44 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
     const code = try file.readToEndAlloc(alloc, 64 * 1024 * 1024);
     defer alloc.free(code);
 
-    var astv = try lib.parseEbnf(alloc, code);
+    var astv = lib.parseEbnfOpts(alloc, code, .{ .permissive = permissive }) catch |e| switch (e) {
+        lib.Error.UndefinedSymbol => {
+            // Attempt to parse again to capture diagnostics if not already populated (parser populates during initial pass).
+            // astv not constructed on failure; reparse permissive same mode just to gather (would fail again fast).
+            var tmp = lib.parseEbnfOpts(alloc, code, .{ .permissive = permissive }) catch return e;
+            defer tmp.deinit();
+            if (tmp.last_undef_names.len > 0) {
+                std.debug.print("Undefined symbols (first {d}):\n", .{tmp.last_undef_names.len});
+                var j: usize = 0;
+                while (j < tmp.last_undef_names.len) : (j += 1) {
+                    const sp = tmp.last_undef_spans[j];
+                    std.debug.print("  {s} at line {d} col {d}\n", .{ tmp.last_undef_names[j], sp.line, sp.col });
+                }
+            } else {
+                std.debug.print("Undefined symbols encountered.\n", .{});
+            }
+            return e;
+        },
+        else => return e,
+    };
     defer astv.deinit();
 
     const gen = lib.GenOptions{
         .backend = .RecursiveDescent,
         .module_name = module_name,
-        .start_rule = start_rule.?,
+        .start_rule = start_rule orelse blk: {
+            if (astv.rules.len == 0) return error.InvalidArgument;
+            break :blk astv.rules[0].name;
+        },
     };
-    const out = try lib.generateZig(alloc, &astv, gen);
-    defer alloc.free(out.files);
+    var out = try lib.generateZig(alloc, &astv, gen);
+    defer out.deinit(alloc);
 
     // Write files under out_dir/module_name/...
     var buf = std.ArrayList(u8){};
     defer buf.deinit(alloc);
 
-    const base = try lib.runtime.sanitizeJoin(alloc, out_dir.?, module_name, &buf);
+    const base = try lib.runtime.sanitizeJoin(alloc, out_dir, module_name, &buf);
     try std.fs.cwd().makePath(base);
     for (out.files) |gf| {
         // gf.path is "<module>/mod.zig" etc: join base + tail after module name

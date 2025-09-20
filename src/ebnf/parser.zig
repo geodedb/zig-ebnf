@@ -3,17 +3,24 @@ const rt = @import("../runtime/runtime.zig");
 const ast = @import("ast.zig");
 const Error = ast.Error;
 const lex = @import("lexer.zig");
+const lib = @import("../lib.zig");
 
 pub fn parse(alloc: std.mem.Allocator, src: []const u8) !ast.AST {
+    return parseWithOpts(alloc, src, .{});
+}
+
+pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseOptions) !ast.AST {
     var lx = lex.Lexer.init(alloc, src);
+    lx.permissive = opts.permissive;
 
     // Arena for all Expr and slice allocations to simplify cleanup.
     var arena_ptr = try alloc.create(std.heap.ArenaAllocator);
     arena_ptr.* = std.heap.ArenaAllocator.init(alloc);
-    errdefer {
+    var arena_cancel = false;
+    errdefer if (!arena_cancel) {
         arena_ptr.deinit();
         alloc.destroy(arena_ptr);
-    }
+    };
     const aalloc = arena_ptr.allocator();
 
     var rules: std.ArrayList(ast.Rule) = .{};
@@ -26,6 +33,15 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8) !ast.AST {
         for (literals.items) |lit| alloc.free(lit);
         literals.deinit(alloc);
     }
+    // Dedup set to avoid storing duplicate (interned) literal value slices which would double free.
+    var literal_set = std.StringHashMap(void).init(alloc);
+    var literal_set_active = true;
+    errdefer if (literal_set_active) literal_set.deinit();
+
+    // Collect identifier occurrences (excluding rule headers) for span-aware diagnostics.
+    var ident_occurs: std.ArrayList(ast.AST.IdentOccur) = .{};
+    var ident_occurs_active = true;
+    errdefer if (ident_occurs_active) ident_occurs.deinit(alloc);
 
     var toks: std.ArrayList(lex.Tok) = .{};
     defer toks.deinit(alloc);
@@ -35,12 +51,17 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8) !ast.AST {
         const t = try lx.next();
         // Capture literal buffers (value) for later freeing. The lexer allocates a slice for every literal token.
         if (t.kind == .Literal) {
-            // Store the owned value slice so AST.deinit can free it.
-            try literals.append(alloc, t.value);
+            // Store only first occurrence of an interned literal; duplicates share pointer.
+            if (!literal_set.contains(t.value)) {
+                try literal_set.put(t.value, {});
+                try literals.append(alloc, t.value);
+            }
         }
         try toks.append(alloc, t);
         if (t.kind == .Eof) break;
     }
+    lx.deinit();
+    // literal_set will be cleaned up by errdefer cancellation below after ownership transfer.
 
     var i: usize = 0;
     const peek = struct {
@@ -68,14 +89,39 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8) !ast.AST {
     while (peek(toks.items, i).kind != .Eof) {
         const id = try expect.take(toks.items, &i, .Ident);
         if (!(expect.maybe(toks.items, &i, .Assign))) return Error.SyntaxError;
-        const expr_ref = try parseRhs(aalloc, toks.items, &i);
+        const expr_ref = try parseRhs(aalloc, toks.items, &i, &ident_occurs);
         try rules.append(alloc, .{ .name = id.lexeme, .expr = expr_ref, .span = id.span });
     }
 
-    var ast_out = ast.AST{ .alloc = alloc, .src = src, .rules = try rules.toOwnedSlice(alloc), .literals = try literals.toOwnedSlice(alloc), .arena = arena_ptr };
+    // Move ident occurrences into arena-owned slice (lightweight copies).
+    var idents_slice: []ast.AST.IdentOccur = &[_]ast.AST.IdentOccur{};
+    if (ident_occurs.items.len > 0) {
+        idents_slice = try aalloc.alloc(ast.AST.IdentOccur, ident_occurs.items.len);
+        for (idents_slice, 0..) |*dst, idx| dst.* = ident_occurs.items[idx];
+    }
+    ident_occurs_active = false; // release temp list
+    var ast_out = ast.AST{
+        .alloc = alloc,
+        .src = src,
+        .rules = try rules.toOwnedSlice(alloc),
+        .literals = try literals.toOwnedSlice(alloc),
+        .arena = arena_ptr,
+        .idents = idents_slice,
+    };
+    // No longer need literal_set beyond this point.
+    literal_set.deinit();
+    literal_set_active = false;
+    // Ownership has transferred to ast_out; cancel raw arena cleanup and replace with ast_out.deinit on failure.
+    arena_cancel = true; // ast_out now responsible for arena lifetime
+    var ast_cleanup = true;
+    errdefer if (ast_cleanup) ast_out.deinit();
+
+    // Perform early validations; if any fail error unwinds triggering ast_out.deinit via errdefer.
     try ast_out.ensureNoDuplicates();
     try ast_out.ensureDefinedSymbols();
-    // Note: other validations are performed during generation and CLI recognition flows too.
+
+    // Success – caller takes ownership.
+    ast_cleanup = false;
     return ast_out;
 }
 
@@ -83,12 +129,12 @@ inline fn isRuleStart(ts: []const lex.Tok, idx: usize) bool {
     return idx + 1 < ts.len and ts[idx].kind == .Ident and ts[idx + 1].kind == .Assign;
 }
 
-fn parseRhs(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || std.mem.Allocator.Error)!ast.ExprRef {
+fn parseRhs(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.ArrayList(ast.AST.IdentOccur)) (Error || std.mem.Allocator.Error)!ast.ExprRef {
     var alts: std.ArrayList(ast.ExprRef) = .{};
     errdefer alts.deinit(alloc);
 
     while (true) {
-        const seq = try parseSequence(alloc, ts, i);
+        const seq = try parseSequence(alloc, ts, i, idents);
         try alts.append(alloc, seq);
         if (ts[i.*].kind == .Pipe) {
             i.* += 1;
@@ -108,7 +154,7 @@ fn parseRhs(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || std.me
     return node;
 }
 
-fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || std.mem.Allocator.Error)!ast.ExprRef {
+fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.ArrayList(ast.AST.IdentOccur)) (Error || std.mem.Allocator.Error)!ast.ExprRef {
     var items: std.ArrayList(ast.ExprRef) = .{};
     errdefer items.deinit(alloc);
 
@@ -122,7 +168,7 @@ fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || s
             .Literal, .LBracket, .LBrace => {},
             else => break,
         }
-        const term = try parseTerm(alloc, ts, i);
+        const term = try parseTerm(alloc, ts, i, idents);
         try items.append(alloc, term);
     }
 
@@ -142,13 +188,14 @@ fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || s
     return node;
 }
 
-fn parseTerm(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || std.mem.Allocator.Error)!ast.ExprRef {
+fn parseTerm(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.ArrayList(ast.AST.IdentOccur)) (Error || std.mem.Allocator.Error)!ast.ExprRef {
     const t = ts[i.*];
     switch (t.kind) {
         .Ident => {
             i.* += 1;
             const node = try alloc.create(ast.Expr);
             node.* = ast.Expr{ .ident = t.lexeme };
+            try idents.append(alloc, .{ .name = t.lexeme, .span = t.span });
             return node;
         },
         .Literal => {
@@ -160,7 +207,7 @@ fn parseTerm(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || std.m
         },
         .LBracket => {
             i.* += 1;
-            const inner = parseRhs(alloc, ts, i) catch |e| {
+            const inner = parseRhs(alloc, ts, i, idents) catch |e| {
                 return e; // nothing allocated yet to free
             };
             if (ts[i.*].kind != .RBracket) return Error.SyntaxError;
@@ -171,7 +218,7 @@ fn parseTerm(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize) (Error || std.m
         },
         .LBrace => {
             i.* += 1;
-            const inner = parseRhs(alloc, ts, i) catch |e| {
+            const inner = parseRhs(alloc, ts, i, idents) catch |e| {
                 return e;
             };
             if (ts[i.*].kind != .RBrace) return Error.SyntaxError;

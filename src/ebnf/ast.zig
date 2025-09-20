@@ -48,6 +48,13 @@ pub const AST = struct {
     literals: [][]const u8 = &[_][]const u8{},
     // Optional arena for expression graph allocations; if present it owns all Expr memory.
     arena: ?*std.heap.ArenaAllocator = null,
+    // All identifier occurrences captured during parse (name + span). Owned slices referencing rule/expr memory; name slice lives in source or token stream, not owned.
+    idents: []IdentOccur = &[_]IdentOccur{},
+    // Diagnostics: last undefined symbol names/spans from ensureDefinedSymbols (up to 8). Names are slices into source.
+    last_undef_names: [][]const u8 = &[_][]const u8{},
+    last_undef_spans: []rt.Span = &[_]rt.Span{},
+
+    pub const IdentOccur = struct { name: []const u8, span: rt.Span };
 
     pub fn deinit(self: *AST) void {
         const alloc = self.alloc;
@@ -56,6 +63,9 @@ pub const AST = struct {
             if (self.rules.len > 0) alloc.free(self.rules);
             for (self.literals) |lit| alloc.free(lit);
             if (self.literals.len > 0) alloc.free(self.literals);
+            // idents slice memory resides in arena; do not free with general allocator.
+            if (self.last_undef_names.len > 0) alloc.free(self.last_undef_names);
+            if (self.last_undef_spans.len > 0) alloc.free(self.last_undef_spans);
             ap.deinit();
             alloc.destroy(ap);
             self.* = undefined;
@@ -66,6 +76,9 @@ pub const AST = struct {
         if (self.rules.len > 0) alloc.free(self.rules);
         for (self.literals) |lit| alloc.free(lit);
         if (self.literals.len > 0) alloc.free(self.literals);
+        if (self.idents.len > 0) alloc.free(self.idents);
+        if (self.last_undef_names.len > 0) alloc.free(self.last_undef_names);
+        if (self.last_undef_spans.len > 0) alloc.free(self.last_undef_spans);
         self.* = undefined;
     }
 
@@ -120,9 +133,29 @@ pub const AST = struct {
     }
 
     pub fn ensureDefinedSymbols(self: *const AST) !void {
-        for (self.rules) |r| {
-            if (self.ruleIndex(r.name) == null) return Error.UndefinedSymbol; // defensive: shouldn't happen
-            try walkEnsureDefined(self, r.expr);
+        // Use ident occurrence table for span-aware undefined symbol reporting.
+        var undef_list: std.ArrayList([]const u8) = .{};
+        defer undef_list.deinit(self.alloc);
+        var spans: std.ArrayList(rt.Span) = .{};
+        defer spans.deinit(self.alloc);
+        var i: usize = 0;
+        while (i < self.idents.len and undef_list.items.len < 8) : (i += 1) {
+            const occ = self.idents[i];
+            if (self.ruleIndex(occ.name) == null) {
+                try undef_list.append(self.alloc, occ.name);
+                try spans.append(self.alloc, occ.span);
+            }
+        }
+        // Replace previous diagnostic arrays.
+        const mut = @constCast(self);
+        if (mut.last_undef_names.len > 0) mut.alloc.free(mut.last_undef_names);
+        if (mut.last_undef_spans.len > 0) mut.alloc.free(mut.last_undef_spans);
+        mut.last_undef_names = &[_][]const u8{};
+        mut.last_undef_spans = &[_]rt.Span{};
+        if (undef_list.items.len > 0) {
+            mut.last_undef_names = try undef_list.toOwnedSlice(mut.alloc);
+            mut.last_undef_spans = try spans.toOwnedSlice(mut.alloc);
+            return Error.UndefinedSymbol;
         }
     }
 
@@ -332,6 +365,14 @@ pub const AST = struct {
             .choice => |alts| for (alts) |it| try visitRefs(self, it, seen, q),
             .literal, .empty => {},
         }
+    }
+
+    // Legacy collectUndef no longer used (span-less); kept for reference if future deep-walk needed.
+    fn collectUndef(self: *const AST, e: ExprRef, names: *std.ArrayList([]const u8), spans: *std.ArrayList(rt.Span)) !void {
+        _ = self;
+        _ = e;
+        _ = names;
+        _ = spans;
     }
 };
 
