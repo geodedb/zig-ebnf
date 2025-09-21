@@ -118,7 +118,49 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
 
     // Perform early validations; if any fail error unwinds triggering ast_out.deinit via errdefer.
     try ast_out.ensureNoDuplicates();
-    try ast_out.ensureDefinedSymbols();
+
+    // In permissive mode, auto-stub any undefined nonterminals (assign empty production) so
+    // large external grammars with implicit lexical tokens can be ingested. We do this
+    // before calling ensureDefinedSymbols; if stubs cover all, no UndefinedSymbol error.
+    if (opts.permissive) {
+        // Collect undefined names first to avoid mutating while iterating.
+        var undef = std.StringHashMap(rt.Span).init(alloc);
+        defer undef.deinit();
+        var i_u: usize = 0;
+        while (i_u < ast_out.idents.len) : (i_u += 1) {
+            const occ = ast_out.idents[i_u];
+            if (ast_out.ruleIndex(occ.name) == null) {
+                // Skip if already scheduled
+                _ = try undef.fetchPut(occ.name, occ.span);
+            }
+        }
+        if (undef.count() > 0) {
+            // Move existing rules into an ArrayList to append stubs.
+            var tmp_rules: std.ArrayList(ast.Rule) = .{};
+            defer tmp_rules.deinit(alloc); // converted to slice later
+            try tmp_rules.appendSlice(alloc, ast_out.rules);
+            alloc.free(ast_out.rules);
+            var it = undef.iterator();
+            while (it.next()) |e| {
+                const nm = e.key_ptr.*;
+                // Create empty expr node in arena.
+                const expr_node = try aalloc.create(ast.Expr);
+                expr_node.* = ast.Expr{ .empty = {} };
+                // Mark span line=0 as synthetic stub so reachability can ignore.
+                var sp = e.value_ptr.*;
+                sp.line = 0;
+                try tmp_rules.append(alloc, .{ .name = nm, .expr = expr_node, .span = sp });
+            }
+            ast_out.rules = try tmp_rules.toOwnedSlice(alloc);
+        }
+    }
+
+    if (opts.permissive) {
+        ast_out.ensureDefinedSymbols() catch |e| switch (e) {
+            Error.UndefinedSymbol => {}, // tolerate (stubs may remain unresolved)
+            else => return e,
+        };
+    } else try ast_out.ensureDefinedSymbols();
 
     // Success – caller takes ownership.
     ast_cleanup = false;

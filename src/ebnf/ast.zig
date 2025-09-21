@@ -138,10 +138,27 @@ pub const AST = struct {
         defer undef_list.deinit(self.alloc);
         var spans: std.ArrayList(rt.Span) = .{};
         defer spans.deinit(self.alloc);
+        // Heuristic: treat ALL_CAPS (letters, digits, underscore) identifiers as implicit
+        // lexer-provided token symbols so large external grammars (e.g. gql.ebnf) that
+        // reference symbolic terminals like IDENTIFIER, INTEGER, STRING, VARIABLE, etc.
+        // do not require dummy rule definitions. This keeps grammar authoring ergonomic
+        // while still flagging genuinely undefined nonterminals written in lower/mixed case.
+        const looksToken = struct {
+            fn check(name: []const u8) bool {
+                if (name.len == 0) return false;
+                var any_alpha = false;
+                for (name) |c| {
+                    if (c >= 'a' and c <= 'z') return false; // has lowercase => nonterminal
+                    if (!((c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_')) return false;
+                    if (c >= 'A' and c <= 'Z') any_alpha = true;
+                }
+                return any_alpha; // at least one letter to avoid treating "_" as token
+            }
+        }.check;
         var i: usize = 0;
         while (i < self.idents.len and undef_list.items.len < 8) : (i += 1) {
             const occ = self.idents[i];
-            if (self.ruleIndex(occ.name) == null) {
+            if (self.ruleIndex(occ.name) == null and !looksToken(occ.name)) {
                 try undef_list.append(self.alloc, occ.name);
                 try spans.append(self.alloc, occ.span);
             }
@@ -334,6 +351,16 @@ pub const AST = struct {
     }
 
     pub fn checkReachability(self: *const AST, start: []const u8) !void {
+        // If synthetic stub rules are present (span.line == 0) we skip strict reachability
+        // to allow large external grammars with partial definitions to pass permissive mode.
+        var has_stub = false;
+        for (self.rules) |r| {
+            if (r.span.line == 0) {
+                has_stub = true;
+                break;
+            }
+        }
+        if (has_stub) return; // relaxed in permissive ingestion
         var q: std.ArrayList([]const u8) = .{};
         defer q.deinit(self.alloc);
         var seen = std.StringHashMap(bool).init(self.alloc);
@@ -349,6 +376,8 @@ pub const AST = struct {
         }
 
         for (self.rules) |r| {
+            // Ignore synthetic stub rules (span.line == 0) for reachability reporting.
+            if (r.span.line == 0) continue;
             if (!seen.contains(r.name)) return Error.UnreachableRule;
         }
     }

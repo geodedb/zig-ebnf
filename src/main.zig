@@ -6,7 +6,7 @@ const Version = "0.1.0";
 fn printUsage() void {
     std.debug.print(
         \\
-        \\zig-ebnf generate  (--in|--grammar) <grammar.ebnf> [--out <dir>] [--start <rule>] [--module-name <name>] [--permissive]
+        \\zig-ebnf generate  (--in|--grammar) <grammar.ebnf> [--out <dir>] [--start <rule>] [--module-name <name>] [--backend rd|stub] [--permissive] [--emit-cli-demo]
         \\  (Positional form also accepted: zig-ebnf generate <grammar.ebnf>)
         \\  Defaults: --out ./zig-ebnf-out, --start first-rule, --module-name generated
         \\zig-ebnf recognize --grammar <grammar.ebnf> --start <rule> --input <str>
@@ -49,6 +49,8 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
     var start_rule: ?[]const u8 = null;
     var module_name: []const u8 = "generated";
     var permissive = false;
+    var backend: lib.GenBackend = .RecursiveDescent;
+    var emit_cli_demo = false;
 
     // Collect positional (first non-flag) as grammar if --in/--grammar absent.
     var i: usize = 0;
@@ -76,6 +78,15 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
             continue;
         } else if (std.mem.eql(u8, a, "--permissive")) {
             permissive = true;
+            continue;
+        } else if (std.mem.eql(u8, a, "--backend")) {
+            if (i + 1 >= argv.len) return error.InvalidArgument;
+            const bname = argv[i + 1];
+            if (std.mem.eql(u8, bname, "rd")) backend = .RecursiveDescent else if (std.mem.eql(u8, bname, "stub")) backend = .Stub else return error.InvalidArgument;
+            i += 1;
+            continue;
+        } else if (std.mem.eql(u8, a, "--emit-cli-demo")) {
+            emit_cli_demo = true;
             continue;
         } else if (a.len > 0 and a[0] != '-') {
             // positional grammar if not set yet
@@ -116,12 +127,13 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
     defer astv.deinit();
 
     const gen = lib.GenOptions{
-        .backend = .RecursiveDescent,
+        .backend = backend,
         .module_name = module_name,
         .start_rule = start_rule orelse blk: {
             if (astv.rules.len == 0) return error.InvalidArgument;
             break :blk astv.rules[0].name;
         },
+        .emit_cli_demo = emit_cli_demo,
     };
     var out = try lib.generateZig(alloc, &astv, gen);
     defer out.deinit(alloc);

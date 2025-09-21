@@ -22,12 +22,12 @@ zig build test           # run unit tests
 ## CLI
 
 ```bash
-zig-ebnf generate  --in \<grammar.ebnf\> --out \<dir\> --start \<rule\> [--module-name \<name\>] [--permissive]
+zig-ebnf generate  --in \<grammar.ebnf\> --out \<dir\> --start \<rule\> [--module-name \<name\>] [--backend rd|stub] [--permissive] [--emit-cli-demo]
 zig-ebnf recognize --grammar \<grammar.ebnf\> --start \<rule\> --input \<str\>
 zig-ebnf version
 ```
 
-- `generate`: validates grammar, emits Zig module files under `--out/<module-name>/`.
+- `generate`: validates grammar, emits Zig module files under `--out/<module-name>/` (backend `rd` = recursive descent, `stub` = placeholder). Use `--emit-cli-demo` to include a small `cli_demo.zig` showcasing recognizer invocation.
 - `recognize`: runs an interpreter over the AST; on success prints
 
 ```text
@@ -91,7 +91,7 @@ pub const Error = error{
     EmptyRepetition, UnreachableRule, AmbiguousChoice, IoError,
 };
 
-pub const GenBackend = enum { RecursiveDescent };
+pub const GenBackend = enum { RecursiveDescent, Stub };
 pub const GenOptions = struct {
     backend: GenBackend = .RecursiveDescent,
     module_name: []const u8 = "generated",
@@ -154,6 +154,19 @@ zig build run -- recognize --grammar examples/integer.ebnf --start integer --inp
 - No external deps; no path traversal: outputs restricted to `--out/<module-name>/`.
 - Memory budget ~512 MiB. ~200-rule grammars parse <2s on typical x86_64.
 - Deterministic codegen and stable token order.
+
+---
+
+## Backends
+
+Backend selection (flag: `--backend rd|stub`):
+
+| Backend | Description                                                   | Typical Use                                        |
+| ------- | ------------------------------------------------------------- | -------------------------------------------------- |
+| rd      | Full recursive-descent parser + longest-match lexer           | Normal generation / integration                    |
+| stub    | Minimal placeholder; rules fail, recognizer only checks empty | Fast structural diffing, benchmarking codegen path |
+
+The stub backend shares the same header/meta generation; it’s intentionally tiny and not for recognition.
 
 ---
 

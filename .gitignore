@@ -8,6 +8,7 @@ out/
 results
 zig-out/
 .zig-cache/
+zig-ebnf-out/
 
 test_io
 test_formatter

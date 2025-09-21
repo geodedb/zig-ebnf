@@ -7,6 +7,5 @@ pub fn main() !void {
     defer list.deinit(allocator);
     try list.append(allocator, 42);
     const val = list.pop();
-    std.debug.print("Popped: {}
-", .{val});
+    std.debug.print("Popped: {d}\n", .{val});
 }
