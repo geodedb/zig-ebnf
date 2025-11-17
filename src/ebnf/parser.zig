@@ -23,15 +23,15 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
     };
     const aalloc = arena_ptr.allocator();
 
-    var rules: std.ArrayList(ast.Rule) = .{};
-    errdefer rules.deinit(alloc);
+    var rules = std.ArrayList(ast.Rule).init(alloc);
+    errdefer rules.deinit();
 
     // Track literal value buffers allocated by the lexer so AST.deinit can free them.
-    var literals: std.ArrayList([]const u8) = .{};
+    var literals = std.ArrayList([]const u8).init(alloc);
     // On any error before AST construction, free each literal slice.
     errdefer {
         for (literals.items) |lit| alloc.free(lit);
-        literals.deinit(alloc);
+        literals.deinit();
     }
     // Dedup set to avoid storing duplicate (interned) literal value slices which would double free.
     var literal_set = std.StringHashMap(void).init(alloc);
@@ -39,12 +39,12 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
     errdefer if (literal_set_active) literal_set.deinit();
 
     // Collect identifier occurrences (excluding rule headers) for span-aware diagnostics.
-    var ident_occurs: std.ArrayList(ast.AST.IdentOccur) = .{};
+    var ident_occurs = std.ArrayList(ast.AST.IdentOccur).init(alloc);
     var ident_occurs_active = true;
-    errdefer if (ident_occurs_active) ident_occurs.deinit(alloc);
+    errdefer if (ident_occurs_active) ident_occurs.deinit();
 
-    var toks: std.ArrayList(lex.Tok) = .{};
-    defer toks.deinit(alloc);
+    var toks = std.ArrayList(lex.Tok).init(alloc);
+    defer toks.deinit();
 
     // Tokenize entire stream once so we can attach literal values, then parse.
     while (true) {
@@ -54,10 +54,10 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
             // Store only first occurrence of an interned literal; duplicates share pointer.
             if (!literal_set.contains(t.value)) {
                 try literal_set.put(t.value, {});
-                try literals.append(alloc, t.value);
+                try literals.append(t.value);
             }
         }
-        try toks.append(alloc, t);
+        try toks.append(t);
         if (t.kind == .Eof) break;
     }
     lx.deinit();
@@ -90,7 +90,7 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
         const id = try expect.take(toks.items, &i, .Ident);
         if (!(expect.maybe(toks.items, &i, .Assign))) return Error.SyntaxError;
         const expr_ref = try parseRhs(aalloc, toks.items, &i, &ident_occurs);
-        try rules.append(alloc, .{ .name = id.lexeme, .expr = expr_ref, .span = id.span });
+        try rules.append(.{ .name = id.lexeme, .expr = expr_ref, .span = id.span });
     }
 
     // Move ident occurrences into arena-owned slice (lightweight copies).
@@ -103,8 +103,8 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
     var ast_out = ast.AST{
         .alloc = alloc,
         .src = src,
-        .rules = try rules.toOwnedSlice(alloc),
-        .literals = try literals.toOwnedSlice(alloc),
+        .rules = try rules.toOwnedSlice(),
+        .literals = try literals.toOwnedSlice(),
         .arena = arena_ptr,
         .idents = idents_slice,
     };
@@ -136,9 +136,9 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
         }
         if (undef.count() > 0) {
             // Move existing rules into an ArrayList to append stubs.
-            var tmp_rules: std.ArrayList(ast.Rule) = .{};
-            defer tmp_rules.deinit(alloc); // converted to slice later
-            try tmp_rules.appendSlice(alloc, ast_out.rules);
+            var tmp_rules = std.ArrayList(ast.Rule).init(alloc);
+            defer tmp_rules.deinit(); // converted to slice later
+            try tmp_rules.appendSlice(ast_out.rules);
             alloc.free(ast_out.rules);
             var it = undef.iterator();
             while (it.next()) |e| {
@@ -149,9 +149,9 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
                 // Mark span line=0 as synthetic stub so reachability can ignore.
                 var sp = e.value_ptr.*;
                 sp.line = 0;
-                try tmp_rules.append(alloc, .{ .name = nm, .expr = expr_node, .span = sp });
+                try tmp_rules.append(.{ .name = nm, .expr = expr_node, .span = sp });
             }
-            ast_out.rules = try tmp_rules.toOwnedSlice(alloc);
+            ast_out.rules = try tmp_rules.toOwnedSlice();
         }
     }
 
@@ -172,12 +172,12 @@ inline fn isRuleStart(ts: []const lex.Tok, idx: usize) bool {
 }
 
 fn parseRhs(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.ArrayList(ast.AST.IdentOccur)) (Error || std.mem.Allocator.Error)!ast.ExprRef {
-    var alts: std.ArrayList(ast.ExprRef) = .{};
-    errdefer alts.deinit(alloc);
+    var alts = std.ArrayList(ast.ExprRef).init(alloc);
+    errdefer alts.deinit();
 
     while (true) {
         const seq = try parseSequence(alloc, ts, i, idents);
-        try alts.append(alloc, seq);
+        try alts.append(seq);
         if (ts[i.*].kind == .Pipe) {
             i.* += 1;
             continue;
@@ -188,17 +188,17 @@ fn parseRhs(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.Arr
     if (alts.items.len == 1) {
         const only = alts.items[0];
         // Free backing buffer of temporary list (child expr itself owned by caller).
-        alts.deinit(alloc);
+        alts.deinit();
         return only;
     }
     const node = try alloc.create(ast.Expr);
-    node.* = ast.Expr{ .choice = try alts.toOwnedSlice(alloc) };
+    node.* = ast.Expr{ .choice = try alts.toOwnedSlice() };
     return node;
 }
 
 fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.ArrayList(ast.AST.IdentOccur)) (Error || std.mem.Allocator.Error)!ast.ExprRef {
-    var items: std.ArrayList(ast.ExprRef) = .{};
-    errdefer items.deinit(alloc);
+    var items = std.ArrayList(ast.ExprRef).init(alloc);
+    errdefer items.deinit();
 
     while (true) {
         const t = ts[i.*];
@@ -211,7 +211,7 @@ fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *st
             else => break,
         }
         const term = try parseTerm(alloc, ts, i, idents);
-        try items.append(alloc, term);
+        try items.append(term);
     }
 
     if (items.items.len == 0) {
@@ -222,11 +222,11 @@ fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *st
 
     if (items.items.len == 1) {
         const only = items.items[0];
-        items.deinit(alloc); // free backing buffer
+        items.deinit(); // free backing buffer
         return only;
     }
     const node = try alloc.create(ast.Expr);
-    node.* = ast.Expr{ .seq = try items.toOwnedSlice(alloc) };
+    node.* = ast.Expr{ .seq = try items.toOwnedSlice() };
     return node;
 }
 
@@ -237,7 +237,7 @@ fn parseTerm(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.Ar
             i.* += 1;
             const node = try alloc.create(ast.Expr);
             node.* = ast.Expr{ .ident = t.lexeme };
-            try idents.append(alloc, .{ .name = t.lexeme, .span = t.span });
+            try idents.append(.{ .name = t.lexeme, .span = t.span });
             return node;
         },
         .Literal => {

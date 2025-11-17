@@ -45,9 +45,9 @@ pub fn emit(alloc: std.mem.Allocator, grammar: *const ast.AST, opts: GenOptions)
     }
 
     // Shared stub header (used by stub or RD backend)
-    var header_buf: std.ArrayList(u8) = .{};
-    defer header_buf.deinit(alloc);
-    const hw = header_buf.writer(alloc);
+    var header_buf = std.ArrayList(u8).init(alloc);
+    defer header_buf.deinit();
+    const hw = header_buf.writer();
     try hw.writeAll("// Generated parser module (zig-ebnfgen)\n");
     if (stub_count > 0) {
         try hw.print("// NOTE: {d} synthetic stub rule(s) inserted (permissive mode).\n// synthetic stub rule list: ", .{stub_count});
@@ -60,7 +60,7 @@ pub fn emit(alloc: std.mem.Allocator, grammar: *const ast.AST, opts: GenOptions)
         }
         try hw.writeAll("\n");
     }
-    const header = try header_buf.toOwnedSlice(alloc);
+    const header = try header_buf.toOwnedSlice();
     var mod_code: []u8 = undefined;
     var backend_name: []const u8 = undefined;
     switch (opts.backend) {
@@ -76,24 +76,24 @@ pub fn emit(alloc: std.mem.Allocator, grammar: *const ast.AST, opts: GenOptions)
     // header no longer needed after copy into module code
     alloc.free(header);
     const mod_path = try std.fmt.allocPrint(alloc, "{s}/mod.zig", .{opts.module_name});
-    var files: std.ArrayList(GeneratedFile) = .{};
-    try files.append(alloc, .{ .path = mod_path, .contents = mod_code });
+    var files = std.ArrayList(GeneratedFile).init(alloc);
+    try files.append(.{ .path = mod_path, .contents = mod_code });
     const readme = try std.fmt.allocPrint(
         alloc,
         "# {s}\n\nBackend: {s}\n\nSynthetic stub rules: {d}\n",
         .{ opts.module_name, backend_name, stub_count },
     );
     const readme_path = try std.fmt.allocPrint(alloc, "{s}/README.generated.md", .{opts.module_name});
-    try files.append(alloc, .{ .path = readme_path, .contents = readme });
+    try files.append(.{ .path = readme_path, .contents = readme });
     if (opts.emit_cli_demo and opts.backend == .RecursiveDescent) {
         const demo_path = try std.fmt.allocPrint(alloc, "{s}/cli_demo.zig", .{opts.module_name});
-        var demo_buf: std.ArrayList(u8) = .{};
-        defer demo_buf.deinit(alloc);
-        try demo_buf.appendSlice(alloc, "const std = @import(\"std\");\nconst gen = @import(\"mod.zig\");\npub fn main() !void {\n    if (std.os.argv.len < 2) { std.debug.print(\"usage: <prog> <input>\\n\", .{}); return; }\n    const input = std.mem.span(@ptrCast([*:0]const u8, std.os.argv[1]));\n    gen.recognize_");
-        try demo_buf.appendSlice(alloc, opts.start_rule);
-        try demo_buf.appendSlice(alloc, "(input) catch |e| switch (e) { error.Unexpected => std.debug.print(\"REJECT unexpected\\n\", .{}), error.Trailing => std.debug.print(\"REJECT trailing\\n\", .{}), };\n}\n");
-        const demo_code = try demo_buf.toOwnedSlice(alloc);
-        try files.append(alloc, .{ .path = demo_path, .contents = demo_code });
+        var demo_buf = std.ArrayList(u8).init(alloc);
+        defer demo_buf.deinit();
+        try demo_buf.appendSlice("const std = @import(\"std\");\nconst gen = @import(\"mod.zig\");\npub fn main() !void {\n    var gpa = std.heap.page_allocator;\n    var args = try std.process.argsAlloc(gpa);\n    defer std.process.argsFree(gpa, args);\n    if (args.len < 2) { std.debug.print(\"usage: <prog> <input>\\n\", .{}); return; }\n    const input = args[1];\n    gen.recognize_");
+        try demo_buf.appendSlice(opts.start_rule);
+        try demo_buf.appendSlice("(input) catch |e| switch (e) { error.Unexpected => std.debug.print(\"REJECT unexpected\\n\", .{}), error.Trailing => std.debug.print(\"REJECT trailing\\n\", .{}), };\n    std.debug.print(\"ACCEPT\\n\", .{});\n}\n");
+        const demo_code = try demo_buf.toOwnedSlice();
+        try files.append(.{ .path = demo_path, .contents = demo_code });
     }
-    return Generated{ .files = try files.toOwnedSlice(alloc) };
+    return Generated{ .files = try files.toOwnedSlice() };
 }

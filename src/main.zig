@@ -99,7 +99,7 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
     }
 
     // Read grammar
-    var file = try std.fs.cwd().openFile(in_path.?, .{ .mode = .read_only });
+    var file = try std.fs.cwd().openFile(in_path.?, .{});
     defer file.close();
     const code = try file.readToEndAlloc(alloc, 64 * 1024 * 1024);
     defer alloc.free(code);
@@ -149,11 +149,11 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
         var rel = gf.path[module_name.len..]; // starts with '/...'
         if (rel.len > 0 and (rel[0] == '/' or rel[0] == '\\')) rel = rel[1..];
 
-        var full = std.ArrayList(u8){};
-        defer full.deinit(alloc);
-        try full.appendSlice(alloc, base);
-        try full.append(alloc, std.fs.path.sep);
-        try full.appendSlice(alloc, rel);
+        var full = std.ArrayList(u8).init(alloc);
+        defer full.deinit();
+        try full.appendSlice(base);
+        try full.append(std.fs.path.sep);
+        try full.appendSlice(rel);
 
         // ensure directory exists
         const dir = std.fs.path.dirname(full.items) orelse base;
