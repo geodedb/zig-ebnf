@@ -6,7 +6,7 @@ pub fn main() !void {
     var gpa = std.heap.page_allocator;
 
     // Benchmark integer grammar parse and codegen
-    const int_code = @embedFile("examples/integer.ebnf");
+    const int_code = @embedFile("../examples/integer.ebnf");
     var start_ns = std.time.nanoTimestamp();
     var ast_int = try lib.parseEbnf(gpa, int_code);
     var parse_end_ns = std.time.nanoTimestamp();
@@ -19,7 +19,7 @@ pub fn main() !void {
     };
     var gen_int = try lib.generateZig(gpa, &ast_int, int_opts);
     var gen_end_ns = std.time.nanoTimestamp();
-    defer gpa.free(gen_int.files);
+    defer gen_int.deinit(gpa);
 
     // Benchmark recognition for integer grammar
     var rec_start_ns = std.time.nanoTimestamp();
@@ -35,7 +35,7 @@ pub fn main() !void {
     std.debug.print("integer recognize: {d} us\n", .{rec_us});
 
     // Benchmark integer_set grammar parse and generate
-    const intset_code = @embedFile("examples/integer_set.ebnf");
+    const intset_code = @embedFile("../examples/integer_set.ebnf");
     start_ns = std.time.nanoTimestamp();
     var ast_set = try lib.parseEbnf(gpa, intset_code);
     parse_end_ns = std.time.nanoTimestamp();
@@ -47,7 +47,7 @@ pub fn main() !void {
     };
     var gen_set = try lib.generateZig(gpa, &ast_set, set_opts);
     gen_end_ns = std.time.nanoTimestamp();
-    defer gpa.free(gen_set.files);
+    defer gen_set.deinit(gpa);
     rec_start_ns = std.time.nanoTimestamp();
     var set_result = try lib.recognize(gpa, &ast_set, "integer_set", "{5,-2,11}");
     rec_end_ns = std.time.nanoTimestamp();

@@ -29,9 +29,7 @@ pub fn main() !void {
     const cmd = args[1];
     if (std.mem.eql(u8, cmd, "version")) {
         std.debug.print("zig-ebnfgen {s}\n", .{Version});
-        const zigv = try std.process.getEnvVarOwned(gpa, "ZIG_VERSION");
-        defer gpa.free(zigv);
-        // If env not set, we still print compile-time version using builtin
+        // Print Zig version from builtin (compile-time)
         std.debug.print("zig {s}\n", .{@import("builtin").zig_version_string});
         return;
     } else if (std.mem.eql(u8, cmd, "generate")) {

@@ -36,8 +36,11 @@ zig version              # must print 0.15.1
 ### Build & Test
 
 ```bash
+zig build                # build CLI executable
 zig build test           # run unit tests
 ./scripts/acceptance.sh  # run black-box CLI acceptance tests
+zig build bench          # build benchmark executable
+zig build run-bench      # run benchmarks
 ```
 
 ---
@@ -190,6 +193,12 @@ Backend selection (flag: `--backend rd|stub`):
 | stub    | Minimal placeholder; rules fail, recognizer only checks empty | Fast structural diffing, benchmarking codegen path |
 
 The stub backend shares the same header/meta generation; it’s intentionally tiny and not for recognition.
+
+---
+
+## Implementation Status
+
+See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for a comprehensive overview of all implemented features, test coverage, and known limitations.
 
 ---
 

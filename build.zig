@@ -34,4 +34,23 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+
+    // Benchmark executable
+    const benchmark = b.addExecutable(.{
+        .name = "benchmark",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/benchmark.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    benchmark.root_module.addAnonymousImport("ebnfgen", .{
+        .root_source_file = b.path("src/lib.zig"),
+    });
+
+    const bench_install = b.addInstallArtifact(benchmark, .{});
+    b.step("bench", "Build benchmark executable").dependOn(&bench_install.step);
+
+    const bench_run = b.addRunArtifact(benchmark);
+    b.step("run-bench", "Run benchmark").dependOn(&bench_run.step);
 }
