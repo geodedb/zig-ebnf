@@ -9,10 +9,33 @@ The dialect follows the four control forms (sequence, choice, option, repetition
 
 ---
 
+## Requirements
+
+- **Zig 0.15.1** (required)
+- **Linux**: Kernel 5.0+
+- **macOS**: 11.0+ (Big Sur or newer)
+- **Windows**: Windows 10+
+
+**Note**: Older systems (e.g., Linux kernel 4.x) are not supported. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for details.
+
 ## Install & Build
 
+### Install Zig 0.15.1
+
 ```bash
+# Using the provided script:
+./scripts/install-zig.sh
+
+# Or download manually from:
+# https://ziglang.org/download/0.15.1/
+
+# Verify installation:
 zig version              # must print 0.15.1
+```
+
+### Build & Test
+
+```bash
 zig build test           # run unit tests
 ./scripts/acceptance.sh  # run black-box CLI acceptance tests
 ```
