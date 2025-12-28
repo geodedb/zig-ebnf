@@ -86,13 +86,13 @@ pub const AST = struct {
     pub fn collectTerminals(self: *const AST, alloc: std.mem.Allocator) ![][]const u8 {
         var seen = std.StringHashMap(void).init(alloc);
         defer seen.deinit();
-        var out = std.ArrayList([]const u8).init(alloc);
-        errdefer out.deinit();
+        var out = std.ArrayList([]const u8){};
+        errdefer out.deinit(alloc);
 
         for (self.rules) |r| {
             try collectFromExpr(self, alloc, r.expr, &seen, &out);
         }
-        return out.toOwnedSlice();
+        return out.toOwnedSlice(alloc);
     }
 
     fn collectFromExpr(self: *const AST, alloc: std.mem.Allocator, e: ExprRef, seen: *std.StringHashMap(void), out: *std.ArrayList([]const u8)) !void {
@@ -101,7 +101,7 @@ pub const AST = struct {
                 if (lit.len == 0) return; // empty symbol is not a terminal token
                 if (!seen.contains(lit)) {
                     try seen.put(lit, {});
-                    try out.append(lit);
+                    try out.append(alloc, lit);
                 }
             },
             .ident => {},
@@ -134,10 +134,10 @@ pub const AST = struct {
 
     pub fn ensureDefinedSymbols(self: *const AST) !void {
         // Use ident occurrence table for span-aware undefined symbol reporting.
-        var undef_list = std.ArrayList([]const u8).init(self.alloc);
-        defer undef_list.deinit();
-        var spans = std.ArrayList(rt.Span).init(self.alloc);
-        defer spans.deinit();
+        var undef_list = std.ArrayList([]const u8){};
+        defer undef_list.deinit(self.alloc);
+        var spans = std.ArrayList(rt.Span){};
+        defer spans.deinit(self.alloc);
         // Heuristic: treat ALL_CAPS (letters, digits, underscore) identifiers as implicit
         // lexer-provided token symbols so large external grammars (e.g. gql.ebnf) that
         // reference symbolic terminals like IDENTIFIER, INTEGER, STRING, VARIABLE, etc.
@@ -170,8 +170,8 @@ pub const AST = struct {
         mut.last_undef_names = &[_][]const u8{};
         mut.last_undef_spans = &[_]rt.Span{};
         if (undef_list.items.len > 0) {
-            mut.last_undef_names = try undef_list.toOwnedSlice(mut.alloc);
-            mut.last_undef_spans = try spans.toOwnedSlice(mut.alloc);
+            mut.last_undef_names = try undef_list.toOwnedSlice(self.alloc);
+            mut.last_undef_spans = try spans.toOwnedSlice(self.alloc);
             return Error.UndefinedSymbol;
         }
     }
@@ -308,9 +308,9 @@ pub const AST = struct {
 
         for (self.rules) |r| {
             // DFS over leading nonterminals
-            var stack = std.ArrayList([]const u8).init(temp_alloc);
-            defer stack.deinit();
-            try stack.append(r.name);
+            var stack = std.ArrayList([]const u8){};
+            defer stack.deinit(temp_alloc);
+            try stack.append(temp_alloc, r.name);
             if (try dfsLeftRec(self, temp_alloc, &nulls, r.name, &stack)) {
                 return Error.LeftRecursion;
             }
@@ -341,7 +341,7 @@ pub const AST = struct {
                 }
             }
             if (!visited) {
-                try stack.append(nt);
+                try stack.append(alloc, nt);
                 const found = try dfsLeftRec(self, alloc, nulls, start, stack);
                 _ = stack.pop();
                 if (found) return true;
@@ -361,16 +361,16 @@ pub const AST = struct {
             }
         }
         if (has_stub) return; // relaxed in permissive ingestion
-        var q = std.ArrayList([]const u8).init(self.alloc);
-        defer q.deinit();
+        var q = std.ArrayList([]const u8){};
+        defer q.deinit(self.alloc);
         var seen = std.StringHashMap(bool).init(self.alloc);
         defer seen.deinit();
 
-        try q.append(start);
+        try q.append(self.alloc, start);
         try seen.put(start, true);
 
         while (q.items.len > 0) {
-            const cur = q.pop();
+            const cur = q.pop().?;
             const ri = self.ruleIndex(cur) orelse continue;
             try visitRefs(self, self.rules[ri].expr, &seen, &q);
         }

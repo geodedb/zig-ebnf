@@ -172,11 +172,11 @@ pub const Lexer = struct {
                 '.', ':', '!', '?', '(', ')', ',', '=', '+' => {
                     // These punctuation characters are treated as literal terminals in grammar.
                     // We return them as Literal tokens whose value is the single char.
-                    var buf_p = std.ArrayList(u8).init(self.alloc);
-                    errdefer buf_p.deinit();
-                    try buf_p.append(c);
+                    var buf_p = std.ArrayList(u8){};
+                    errdefer buf_p.deinit(self.alloc);
+                    try buf_p.append(self.alloc, c);
                     self.adv(1);
-                    const owned_p_raw = try buf_p.toOwnedSlice();
+                    const owned_p_raw = try buf_p.toOwnedSlice(self.alloc);
                     const owned_p = try self.internLiteral(owned_p_raw);
                     return Tok{ .kind = .Literal, .lexeme = self.src[start..self.i], .value = owned_p, .span = .{ .start = start, .end = self.i, .line = sline, .col = scol } };
                 },
@@ -199,8 +199,8 @@ pub const Lexer = struct {
                 '\'', '"' => {
                     const quote = c;
                     self.adv(1);
-                    var buf = std.ArrayList(u8).init(self.alloc);
-                    errdefer buf.deinit();
+                    var buf = std.ArrayList(u8){};
+                    errdefer buf.deinit(self.alloc);
                     while (!self.atEnd() and self.cur() != quote) {
                         const ch = self.cur();
                         if (ch == '\\') {
@@ -209,27 +209,27 @@ pub const Lexer = struct {
                             const esc = self.cur();
                             switch (esc) {
                                 'n' => {
-                                    try buf.append('\n');
+                                    try buf.append(self.alloc, '\n');
                                     self.adv(1);
                                 },
                                 'r' => {
-                                    try buf.append('\r');
+                                    try buf.append(self.alloc, '\r');
                                     self.adv(1);
                                 },
                                 't' => {
-                                    try buf.append('\t');
+                                    try buf.append(self.alloc, '\t');
                                     self.adv(1);
                                 },
                                 '\\' => {
-                                    try buf.append('\\');
+                                    try buf.append(self.alloc, '\\');
                                     self.adv(1);
                                 },
                                 '"' => {
-                                    try buf.append('"');
+                                    try buf.append(self.alloc, '"');
                                     self.adv(1);
                                 },
                                 '\'' => {
-                                    try buf.append('\'');
+                                    try buf.append(self.alloc, '\'');
                                     self.adv(1);
                                 },
                                 'x' => {
@@ -239,19 +239,19 @@ pub const Lexer = struct {
                                     const h2 = self.src[self.i + 1];
                                     const v1 = hex(h1) orelse return Error.SyntaxError;
                                     const v2 = hex(h2) orelse return Error.SyntaxError;
-                                    try buf.append(@as(u8, v1 * 16 + v2));
+                                    try buf.append(self.alloc, @as(u8, v1 * 16 + v2));
                                     self.adv(2);
                                 },
                                 else => return Error.SyntaxError,
                             }
                         } else {
-                            try buf.append(ch);
+                            try buf.append(self.alloc, ch);
                             self.adv(1);
                         }
                     }
                     if (self.atEnd() or self.cur() != quote) return Error.SyntaxError;
                     self.adv(1);
-                    const owned_raw = try buf.toOwnedSlice();
+                    const owned_raw = try buf.toOwnedSlice(self.alloc);
                     const owned = try self.internLiteral(owned_raw);
                     return Tok{
                         .kind = .Literal,
@@ -289,11 +289,11 @@ pub const Lexer = struct {
                     return Tok{ .kind = .Ident, .lexeme = self.src[start..self.i], .span = .{ .start = start, .end = self.i, .line = sline, .col = scol } };
                 }
                 if (!self.atEnd() and self.cur() != 0) {
-                    var buf2 = std.ArrayList(u8).init(self.alloc);
-                    errdefer buf2.deinit();
-                    try buf2.append(self.cur());
+                    var buf2 = std.ArrayList(u8){};
+                    errdefer buf2.deinit(self.alloc);
+                    try buf2.append(self.alloc, self.cur());
                     self.adv(1);
-                    const owned2_raw = try buf2.toOwnedSlice();
+                    const owned2_raw = try buf2.toOwnedSlice(self.alloc);
                     const owned2 = try self.internLiteral(owned2_raw);
                     return Tok{ .kind = .Literal, .lexeme = self.src[start..self.i], .value = owned2, .span = .{ .start = start, .end = self.i, .line = sline, .col = scol } };
                 }

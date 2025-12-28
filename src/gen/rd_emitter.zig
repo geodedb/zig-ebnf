@@ -2,9 +2,9 @@ const std = @import("std");
 const ast = @import("../ebnf/ast.zig");
 
 pub fn emitRecursiveDescent(alloc: std.mem.Allocator, grammar: *const ast.AST, start_rule: []const u8, header: []const u8) ![]u8 {
-    var buf = std.ArrayList(u8).init(alloc);
-    errdefer buf.deinit();
-    const w = buf.writer();
+    var buf = std.ArrayList(u8){};
+    errdefer buf.deinit(alloc);
+    const w = buf.writer(alloc);
     try w.writeAll(header);
     try w.writeAll("const std = @import(\"std\");\n");
     try w.writeAll("pub const RecognizerError = error{Unexpected, Trailing};\n");
@@ -27,7 +27,7 @@ pub fn emitRecursiveDescent(alloc: std.mem.Allocator, grammar: *const ast.AST, s
     try w.writeAll("{ var c = Cursor{ .buf = input }; ");
     try w.print("if (!rule_{s}(&c)) return RecognizerError.Unexpected; ", .{start_rule});
     try w.writeAll("if (!c.atEnd()) return RecognizerError.Trailing; }\n");
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(alloc);
 }
 // Statement oriented emission (simpler & clearer for initial RD backend)
 fn emitRuleBody(w: anytype, e: ast.ExprRef, level: usize, counter: *usize) !void {

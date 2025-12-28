@@ -1,0 +1,32 @@
+stages:
+  - build
+  - test
+
+variables:
+  ZIG_VERSION: "0.15.1"
+  ZIG_INSTALL_DIR: "/tmp/zig"
+
+.zig_setup: &zig_setup
+  before_script:
+    - apt-get update && apt-get install -y curl xz-utils
+    - ./scripts/install-zig.sh
+    - export PATH="${ZIG_INSTALL_DIR}/bin:$PATH"
+    - zig version
+
+build:
+  stage: build
+  image: debian:bookworm-slim
+  <<: *zig_setup
+  script:
+    - zig build
+  artifacts:
+    paths:
+      - zig-out/
+    expire_in: 1 hour
+
+test:
+  stage: test
+  image: debian:bookworm-slim
+  <<: *zig_setup
+  script:
+    - zig build test

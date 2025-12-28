@@ -61,8 +61,8 @@ pub fn sanitizeJoin(alloc: std.mem.Allocator, out_dir: []const u8, module_name: 
     }
     if (!ok or module_name.len == 0) return error.InvalidModuleName;
 
-    try out.appendSlice(out_dir);
-    if (!std.fs.path.isSep(out_dir[out_dir.len - 1])) try out.append(std.fs.path.sep);
-    try out.appendSlice(module_name);
+    try out.appendSlice(alloc, out_dir);
+    if (!std.fs.path.isSep(out_dir[out_dir.len - 1])) try out.append(alloc, std.fs.path.sep);
+    try out.appendSlice(alloc, module_name);
     return out.items;
 }

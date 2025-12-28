@@ -16,7 +16,7 @@ fn printUsage() void {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.page_allocator;
+    const gpa = std.heap.page_allocator;
 
     var args = try std.process.argsAlloc(gpa);
     defer std.process.argsFree(gpa, args);
@@ -147,11 +147,11 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
         var rel = gf.path[module_name.len..]; // starts with '/...'
         if (rel.len > 0 and (rel[0] == '/' or rel[0] == '\\')) rel = rel[1..];
 
-        var full = std.ArrayList(u8).init(alloc);
-        defer full.deinit();
-        try full.appendSlice(base);
-        try full.append(std.fs.path.sep);
-        try full.appendSlice(rel);
+        var full = std.ArrayList(u8){};
+        defer full.deinit(alloc);
+        try full.appendSlice(alloc, base);
+        try full.append(alloc, std.fs.path.sep);
+        try full.appendSlice(alloc, rel);
 
         // ensure directory exists
         const dir = std.fs.path.dirname(full.items) orelse base;
