@@ -17,8 +17,8 @@ zig-build:
     - apt-get update && apt-get install -y curl xz-utils
     - |
       if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
-        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
-        mv "zig-linux-x86_64-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
+        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
+        mv "zig-x86_64-linux-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
       fi
     - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig version
@@ -41,8 +41,8 @@ zig-test:
     - apt-get update && apt-get install -y curl xz-utils
     - |
       if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
-        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
-        mv "zig-linux-x86_64-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
+        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
+        mv "zig-x86_64-linux-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
       fi
     - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   script:
@@ -62,8 +62,8 @@ zig-format:
     - apt-get update && apt-get install -y curl xz-utils
     - |
       if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
-        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
-        mv "zig-linux-x86_64-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
+        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" | tar -xJ
+        mv "zig-x86_64-linux-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
       fi
     - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   script:
