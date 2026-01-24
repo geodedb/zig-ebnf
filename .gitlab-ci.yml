@@ -6,12 +6,12 @@ stages:
 
 include:
   # Dependency scanning and SBOM
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.0
+  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
     inputs:
       stage: security
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.0
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.0
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.0
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
     inputs:
       allow_failure: true
 
