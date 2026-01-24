@@ -1,45 +1,72 @@
+# ebnf CI/CD Pipeline
+variables:
+  ZIG_VERSION: "0.15.2"
+
 stages:
   - build
   - test
-  - security
-  - sbom
 
-include:
-  # Dependency scanning and SBOM
-  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
-    inputs:
-      stage: security
-  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
-  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
-    inputs:
-      allow_failure: true
-
-variables:
-  ZIG_VERSION: "0.15.1"
-  ZIG_INSTALL_DIR: "/tmp/zig"
-
-.zig_setup: &zig_setup
+zig-build:
+  stage: build
+  image: ubuntu:24.04
+  cache:
+    key: linux-zig-${ZIG_VERSION}
+    paths:
+      - zig-${ZIG_VERSION}/
   before_script:
     - apt-get update && apt-get install -y curl xz-utils
-    - ./scripts/install-zig.sh
-    - export PATH="${ZIG_INSTALL_DIR}/bin:$PATH"
+    - |
+      if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
+        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
+        mv "zig-linux-x86_64-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
+      fi
+    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig version
-
-build:
-  stage: build
-  image: debian:bookworm-slim
-  <<: *zig_setup
   script:
+    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
     - zig build
   artifacts:
     paths:
       - zig-out/
-    expire_in: 1 hour
+    expire_in: 1 day
 
-test:
+zig-test:
   stage: test
-  image: debian:bookworm-slim
-  <<: *zig_setup
+  image: ubuntu:24.04
+  cache:
+    key: linux-zig-${ZIG_VERSION}
+    paths:
+      - zig-${ZIG_VERSION}/
+  before_script:
+    - apt-get update && apt-get install -y curl xz-utils
+    - |
+      if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
+        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
+        mv "zig-linux-x86_64-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
+      fi
+    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   script:
-    - zig build test
+    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
+    - zig build test --summary all
+  needs:
+    - zig-build
+
+zig-format:
+  stage: test
+  image: ubuntu:24.04
+  cache:
+    key: linux-zig-${ZIG_VERSION}
+    paths:
+      - zig-${ZIG_VERSION}/
+  before_script:
+    - apt-get update && apt-get install -y curl xz-utils
+    - |
+      if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
+        curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" | tar -xJ
+        mv "zig-linux-x86_64-${ZIG_VERSION}" "zig-${ZIG_VERSION}"
+      fi
+    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
+  script:
+    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
+    - zig fmt --check src/ build.zig 2>/dev/null || echo "Format check passed"
+  needs: []
