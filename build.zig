@@ -81,4 +81,20 @@ pub fn build(b: *std.Build) void {
 
     const bench_run = b.addRunArtifact(benchmark);
     b.step("run-bench", "Run benchmark").dependOn(&bench_run.step);
+
+    // Parallel benchmark
+    const parallel_bench_step = b.step("bench-parallel", "Run parallel operations benchmark");
+    const parallel_bench_exe = b.addExecutable(.{
+        .name = "parallel_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/parallel_bench.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "parallel", .module = parallel_mod },
+            },
+        }),
+    });
+    const run_parallel_bench = b.addRunArtifact(parallel_bench_exe);
+    parallel_bench_step.dependOn(&run_parallel_bench.step);
 }
