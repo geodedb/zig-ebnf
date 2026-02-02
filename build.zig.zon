@@ -1,0 +1,18 @@
+.{
+    .name = .ebnf,
+    .version = "0.1.0",
+    .fingerprint = 0x39404527f41625ac,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .spice = .{
+            .url = "https://github.com/judofyr/spice/archive/refs/heads/main.tar.gz",
+            .hash = "spice-0.0.0-3FtxfEq9AAD-Ghd-0OtZhifuq9DzPROtSMYbsAWAOYA2",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+    },
+}
