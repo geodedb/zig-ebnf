@@ -32,6 +32,13 @@ pub fn build(b: *std.Build) void {
         parallel_mod.addImport("spice", sm);
     }
 
+    // Library module exposed to dependents
+    _ = b.addModule("ebnf", .{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // CLI executable
     const exe = b.addExecutable(.{
         .name = "zig-ebnf",
