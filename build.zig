@@ -4,19 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const enable_spice = b.option(bool, "spice", "Enable spice-based parallelism") orelse true;
+    const enable_tp = b.option(bool, "thread-pool", "Enable thread-pool-based parallelism") orelse true;
 
     // Build options module
     const build_options = b.addOptions();
-    build_options.addOption(bool, "enable_spice", enable_spice);
+    build_options.addOption(bool, "enable_tp", enable_tp);
 
-    // Get spice dependency if enabled
-    const spice_mod: ?*std.Build.Module = if (enable_spice) blk: {
-        const spice_dep = b.dependency("spice", .{
+    // Get thread_pool dependency if enabled
+    const tp_mod: ?*std.Build.Module = if (enable_tp) blk: {
+        const tp_dep = b.dependency("thread_pool", .{
             .target = target,
             .optimize = optimize,
         });
-        break :blk spice_dep.module("spice");
+        break :blk tp_dep.module("thread_pool");
     } else null;
 
     // Parallel module
@@ -28,8 +28,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
-    if (spice_mod) |sm| {
-        parallel_mod.addImport("spice", sm);
+    if (tp_mod) |tm| {
+        parallel_mod.addImport("thread_pool", tm);
     }
 
     // Library module exposed to dependents

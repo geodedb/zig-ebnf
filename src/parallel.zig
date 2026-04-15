@@ -1,40 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros
 
-//! Parallel EBNF operations using spice heartbeat scheduling.
+//! Parallel EBNF operations using thread-pool batch submission.
 //!
 //! Provides parallel processing for grammar validation and code generation.
 
 const std = @import("std");
 const build_options = @import("build_options");
-const spice = if (build_options.enable_spice) @import("spice") else struct {
+const tp = if (build_options.enable_tp) @import("thread_pool") else struct {
     pub const ThreadPool = void;
-    pub const Task = void;
-    pub fn Future(comptime I: type, comptime O: type) type {
-        _ = I;
-        _ = O;
-        return void;
-    }
+    pub const TaskContext = void;
+    pub const BatchTask = void;
+    pub const WaitGroup = void;
 };
 
-var global_pool: if (build_options.enable_spice) ?spice.ThreadPool else void = if (build_options.enable_spice) null else {};
+var global_pool: if (build_options.enable_tp) ?tp.ThreadPool else void = if (build_options.enable_tp) null else {};
 var pool_mutex: std.Thread.Mutex = .{};
 
-pub fn getPool() if (build_options.enable_spice) *spice.ThreadPool else void {
-    if (!build_options.enable_spice) return;
+pub fn getPool() if (build_options.enable_tp) *tp.ThreadPool else void {
+    if (!build_options.enable_tp) return;
 
     pool_mutex.lock();
     defer pool_mutex.unlock();
 
     if (global_pool == null) {
-        global_pool = spice.ThreadPool.init(std.heap.page_allocator);
-        global_pool.?.start(.{});
+        global_pool = tp.ThreadPool.init(std.heap.page_allocator, .{}) catch @panic("thread-pool: init failed");
     }
     return &global_pool.?;
 }
 
 pub fn deinitPool() void {
-    if (!build_options.enable_spice) return;
+    if (!build_options.enable_tp) return;
 
     pool_mutex.lock();
     defer pool_mutex.unlock();
@@ -49,12 +45,30 @@ pub fn deinitPool() void {
 // Parallel Rule Processing
 // ============================================================================
 
-pub fn RuleContext(comptime T: type) type {
+fn RuleChunk(comptime T: type) type {
     return struct {
         rules: []const T,
         results: []bool,
+        valid_count: usize,
+        validate_fn: *const fn (T) bool,
     };
 }
+
+fn ruleChunkTask(comptime T: type) *const fn (*anyopaque, *tp.TaskContext) void {
+    return struct {
+        fn run(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
+            const chunk: *RuleChunk(T) = @ptrCast(@alignCast(ctx_ptr));
+            var count: usize = 0;
+            for (chunk.rules, 0..) |rule, i| {
+                chunk.results[i] = chunk.validate_fn(rule);
+                if (chunk.results[i]) count += 1;
+            }
+            chunk.valid_count = count;
+        }
+    }.run;
+}
+
+const MAX_CHUNKS = 64;
 
 /// Process grammar rules in parallel (e.g., for validation)
 pub fn parallelProcessRules(
@@ -65,7 +79,9 @@ pub fn parallelProcessRules(
 ) usize {
     std.debug.assert(rules.len == results.len);
 
-    if (!build_options.enable_spice or rules.len < 8) {
+    const THRESHOLD = 8;
+
+    if (!build_options.enable_tp or rules.len < THRESHOLD) {
         var valid_count: usize = 0;
         for (rules, 0..) |rule, i| {
             results[i] = validateFn(rule);
@@ -75,44 +91,66 @@ pub fn parallelProcessRules(
     }
 
     const pool = getPool();
-    const Ctx = RuleContext(T);
-    return pool.call(usize, ParallelRuleTask(T, validateFn).task, Ctx{ .rules = rules, .results = results });
+    const chunk_size = @max(THRESHOLD, rules.len / MAX_CHUNKS);
+
+    var chunks: [MAX_CHUNKS]RuleChunk(T) = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
+    var n: usize = 0;
+    var i: usize = 0;
+
+    while (i < rules.len and n < MAX_CHUNKS) {
+        const end = @min(i + chunk_size, rules.len);
+        chunks[n] = .{
+            .rules = rules[i..end],
+            .results = results[i..end],
+            .valid_count = 0,
+            .validate_fn = &validateFn,
+        };
+        batch[n] = .{ .task_fn = ruleChunkTask(T), .ctx = @ptrCast(&chunks[n]) };
+        n += 1;
+        i = end;
+    }
+
+    var wg = pool.waitGroup();
+    _ = pool.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        var valid_count: usize = 0;
+        for (rules, 0..) |rule, j| {
+            results[j] = validateFn(rule);
+            if (results[j]) valid_count += 1;
+        }
+        return valid_count;
+    };
+    wg.wait();
+
+    var total: usize = 0;
+    for (chunks[0..n]) |chunk| total += chunk.valid_count;
+    return total;
 }
 
-fn ParallelRuleTask(comptime T: type, comptime validateFn: fn (T) bool) type {
-    const Ctx = RuleContext(T);
+// ============================================================================
+// Parallel Count
+// ============================================================================
+
+fn CountChunk(comptime T: type) type {
     return struct {
-        pub fn task(t: *spice.Task, ctx: Ctx) usize {
-            const rules = ctx.rules;
-            const results = ctx.results;
-
-            if (rules.len < 4) {
-                var valid_count: usize = 0;
-                for (rules, 0..) |rule, i| {
-                    results[i] = validateFn(rule);
-                    if (results[i]) valid_count += 1;
-                }
-                return valid_count;
-            }
-
-            const mid = rules.len / 2;
-            const left_ctx = Ctx{ .rules = rules[0..mid], .results = results[0..mid] };
-            const right_ctx = Ctx{ .rules = rules[mid..], .results = results[mid..] };
-
-            var fut = spice.Future(Ctx, usize).init();
-            fut.fork(t, task, right_ctx);
-
-            const left_count = t.call(usize, task, left_ctx);
-            const right_count = if (fut.join(t)) |val| val else t.call(usize, task, right_ctx);
-
-            return left_count + right_count;
-        }
+        items: []const T,
+        count: usize,
+        predicate_fn: *const fn (T) bool,
     };
 }
 
-// ============================================================================
-// Parallel Terminal Collection
-// ============================================================================
+fn countChunkTask(comptime T: type) *const fn (*anyopaque, *tp.TaskContext) void {
+    return struct {
+        fn run(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
+            const chunk: *CountChunk(T) = @ptrCast(@alignCast(ctx_ptr));
+            var c: usize = 0;
+            for (chunk.items) |item| {
+                if (chunk.predicate_fn(item)) c += 1;
+            }
+            chunk.count = c;
+        }
+    }.run;
+}
 
 /// Parallel count of unique items
 pub fn parallelCount(
@@ -120,7 +158,9 @@ pub fn parallelCount(
     items: []const T,
     comptime predicate: fn (T) bool,
 ) usize {
-    if (!build_options.enable_spice or items.len < 64) {
+    const THRESHOLD = 64;
+
+    if (!build_options.enable_tp or items.len < THRESHOLD) {
         var count: usize = 0;
         for (items) |item| {
             if (predicate(item)) count += 1;
@@ -129,37 +169,42 @@ pub fn parallelCount(
     }
 
     const pool = getPool();
-    return pool.call(usize, ParallelCountTask(T, predicate).task, items);
-}
+    const chunk_size = @max(THRESHOLD, items.len / MAX_CHUNKS);
 
-fn ParallelCountTask(comptime T: type, comptime predicate: fn (T) bool) type {
-    return struct {
-        pub fn task(t: *spice.Task, items: []const T) usize {
-            if (items.len < 32) {
-                var count: usize = 0;
-                for (items) |item| {
-                    if (predicate(item)) count += 1;
-                }
-                return count;
-            }
+    var chunks: [MAX_CHUNKS]CountChunk(T) = undefined;
+    var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
+    var n: usize = 0;
+    var i: usize = 0;
 
-            const mid = items.len / 2;
-            const left = items[0..mid];
-            const right = items[mid..];
+    while (i < items.len and n < MAX_CHUNKS) {
+        const end = @min(i + chunk_size, items.len);
+        chunks[n] = .{
+            .items = items[i..end],
+            .count = 0,
+            .predicate_fn = &predicate,
+        };
+        batch[n] = .{ .task_fn = countChunkTask(T), .ctx = @ptrCast(&chunks[n]) };
+        n += 1;
+        i = end;
+    }
 
-            var fut = spice.Future([]const T, usize).init();
-            fut.fork(t, task, right);
-
-            const left_count = t.call(usize, task, left);
-            const right_count = if (fut.join(t)) |val| val else t.call(usize, task, right);
-
-            return left_count + right_count;
+    var wg = pool.waitGroup();
+    _ = pool.submitBatch(batch[0..n], .{ .wait_group = &wg }) catch {
+        var count: usize = 0;
+        for (items) |item| {
+            if (predicate(item)) count += 1;
         }
+        return count;
     };
+    wg.wait();
+
+    var total: usize = 0;
+    for (chunks[0..n]) |chunk| total += chunk.count;
+    return total;
 }
 
 test "parallel count" {
-    if (!build_options.enable_spice) return error.SkipZigTest;
+    if (!build_options.enable_tp) return error.SkipZigTest;
 
     const items = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
     const count = parallelCount(i32, &items, struct {
