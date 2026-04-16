@@ -23,11 +23,11 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
     };
     const aalloc = arena_ptr.allocator();
 
-    var rules = std.ArrayList(ast.Rule){};
+    var rules: std.ArrayList(ast.Rule) = .empty;
     errdefer rules.deinit(alloc);
 
     // Track literal value buffers allocated by the lexer so AST.deinit can free them.
-    var literals = std.ArrayList([]const u8){};
+    var literals: std.ArrayList([]const u8) = .empty;
     // On any error before AST construction, free each literal slice.
     errdefer {
         for (literals.items) |lit| alloc.free(lit);
@@ -39,11 +39,11 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
     errdefer if (literal_set_active) literal_set.deinit();
 
     // Collect identifier occurrences (excluding rule headers) for span-aware diagnostics.
-    var ident_occurs = std.ArrayList(ast.AST.IdentOccur){};
+    var ident_occurs: std.ArrayList(ast.AST.IdentOccur) = .empty;
     var ident_occurs_active = true;
     errdefer if (ident_occurs_active) ident_occurs.deinit(alloc);
 
-    var toks = std.ArrayList(lex.Tok){};
+    var toks: std.ArrayList(lex.Tok) = .empty;
     defer toks.deinit(alloc);
 
     // Tokenize entire stream once so we can attach literal values, then parse.
@@ -137,7 +137,7 @@ pub fn parseWithOpts(alloc: std.mem.Allocator, src: []const u8, opts: lib.ParseO
         }
         if (undef.count() > 0) {
             // Move existing rules into an ArrayList to append stubs.
-            var tmp_rules = std.ArrayList(ast.Rule){};
+            var tmp_rules: std.ArrayList(ast.Rule) = .empty;
             defer tmp_rules.deinit(alloc); // converted to slice later
             try tmp_rules.appendSlice(alloc, ast_out.rules);
             alloc.free(ast_out.rules);
@@ -173,7 +173,7 @@ inline fn isRuleStart(ts: []const lex.Tok, idx: usize) bool {
 }
 
 fn parseRhs(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.ArrayList(ast.AST.IdentOccur), idents_alloc: std.mem.Allocator) (Error || std.mem.Allocator.Error)!ast.ExprRef {
-    var alts = std.ArrayList(ast.ExprRef){};
+    var alts: std.ArrayList(ast.ExprRef) = .empty;
     errdefer alts.deinit(alloc);
 
     while (true) {
@@ -198,7 +198,7 @@ fn parseRhs(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.Arr
 }
 
 fn parseSequence(alloc: std.mem.Allocator, ts: []lex.Tok, i: *usize, idents: *std.ArrayList(ast.AST.IdentOccur), idents_alloc: std.mem.Allocator) (Error || std.mem.Allocator.Error)!ast.ExprRef {
-    var items = std.ArrayList(ast.ExprRef){};
+    var items: std.ArrayList(ast.ExprRef) = .empty;
     errdefer items.deinit(alloc);
 
     while (true) {

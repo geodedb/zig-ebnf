@@ -15,7 +15,7 @@ const tp = if (build_options.enable_tp) @import("thread_pool") else struct {
 };
 
 var global_pool: if (build_options.enable_tp) ?tp.ThreadPool else void = if (build_options.enable_tp) null else {};
-var pool_mutex: std.Thread.Mutex = .{};
+var pool_mutex: if (build_options.enable_tp) tp.sync.Mutex else void = if (build_options.enable_tp) .{} else {};
 
 pub fn getPool() if (build_options.enable_tp) *tp.ThreadPool else void {
     if (!build_options.enable_tp) return;

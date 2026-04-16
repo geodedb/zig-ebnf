@@ -172,7 +172,7 @@ pub const Lexer = struct {
                 '.', ':', '!', '?', '(', ')', ',', '=', '+' => {
                     // These punctuation characters are treated as literal terminals in grammar.
                     // We return them as Literal tokens whose value is the single char.
-                    var buf_p = std.ArrayList(u8){};
+                    var buf_p: std.ArrayList(u8) = .empty;
                     errdefer buf_p.deinit(self.alloc);
                     try buf_p.append(self.alloc, c);
                     self.adv(1);
@@ -199,7 +199,7 @@ pub const Lexer = struct {
                 '\'', '"' => {
                     const quote = c;
                     self.adv(1);
-                    var buf = std.ArrayList(u8){};
+                    var buf: std.ArrayList(u8) = .empty;
                     errdefer buf.deinit(self.alloc);
                     while (!self.atEnd() and self.cur() != quote) {
                         const ch = self.cur();
@@ -289,7 +289,7 @@ pub const Lexer = struct {
                     return Tok{ .kind = .Ident, .lexeme = self.src[start..self.i], .span = .{ .start = start, .end = self.i, .line = sline, .col = scol } };
                 }
                 if (!self.atEnd() and self.cur() != 0) {
-                    var buf2 = std.ArrayList(u8){};
+                    var buf2: std.ArrayList(u8) = .empty;
                     errdefer buf2.deinit(self.alloc);
                     try buf2.append(self.alloc, self.cur());
                     self.adv(1);

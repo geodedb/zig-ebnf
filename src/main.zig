@@ -3,6 +3,10 @@ const lib = @import("ebnfgen");
 
 const Version = "0.1.0";
 
+inline fn io() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
 fn printUsage() void {
     std.debug.print(
         \\
@@ -15,11 +19,11 @@ fn printUsage() void {
     , .{});
 }
 
-pub fn main() !void {
-    const gpa = std.heap.page_allocator;
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
 
-    var args = try std.process.argsAlloc(gpa);
-    defer std.process.argsFree(gpa, args);
+    const args = try init.minimal.args.toSlice(gpa);
+    defer gpa.free(args);
 
     if (args.len < 2) {
         printUsage();
@@ -41,7 +45,7 @@ pub fn main() !void {
     }
 }
 
-fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
+fn cmdGenerate(alloc: std.mem.Allocator, argv: []const [:0]const u8) !void {
     var in_path: ?[]const u8 = null;
     var out_dir: []const u8 = "zig-ebnf-out";
     var start_rule: ?[]const u8 = null;
@@ -97,9 +101,8 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
     }
 
     // Read grammar
-    var file = try std.fs.cwd().openFile(in_path.?, .{});
-    defer file.close();
-    const code = try file.readToEndAlloc(alloc, 64 * 1024 * 1024);
+    const cwd = std.Io.Dir.cwd();
+    const code = try cwd.readFileAlloc(io(), in_path.?, alloc, .limited(64 * 1024 * 1024));
     defer alloc.free(code);
 
     var astv = lib.parseEbnfOpts(alloc, code, .{ .permissive = permissive }) catch |e| switch (e) {
@@ -137,33 +140,33 @@ fn cmdGenerate(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
     defer out.deinit(alloc);
 
     // Write files under out_dir/module_name/...
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
 
     const base = try lib.runtime.sanitizeJoin(alloc, out_dir, module_name, &buf);
-    try std.fs.cwd().makePath(base);
+    try cwd.createDirPath(io(), base);
     for (out.files) |gf| {
         // gf.path is "<module>/mod.zig" etc: join base + tail after module name
         var rel = gf.path[module_name.len..]; // starts with '/...'
         if (rel.len > 0 and (rel[0] == '/' or rel[0] == '\\')) rel = rel[1..];
 
-        var full = std.ArrayList(u8){};
+        var full: std.ArrayList(u8) = .empty;
         defer full.deinit(alloc);
         try full.appendSlice(alloc, base);
-        try full.append(alloc, std.fs.path.sep);
+        try full.append(alloc, std.Io.Dir.path.sep);
         try full.appendSlice(alloc, rel);
 
         // ensure directory exists
-        const dir = std.fs.path.dirname(full.items) orelse base;
-        try std.fs.cwd().makePath(dir);
+        const dir = std.Io.Dir.path.dirname(full.items) orelse base;
+        try cwd.createDirPath(io(), dir);
 
-        var f = try std.fs.cwd().createFile(full.items, .{ .read = true, .truncate = true });
-        defer f.close();
-        try f.writeAll(gf.contents);
+        var f = try cwd.createFile(io(), full.items, .{ .read = true, .truncate = true });
+        defer f.close(io());
+        try f.writeStreamingAll(io(), gf.contents);
     }
 }
 
-fn cmdRecognize(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
+fn cmdRecognize(alloc: std.mem.Allocator, argv: []const [:0]const u8) !void {
     var grammar_path: ?[]const u8 = null;
     var start_rule: ?[]const u8 = null;
     var input: ?[]const u8 = null;
@@ -192,9 +195,8 @@ fn cmdRecognize(alloc: std.mem.Allocator, argv: [][:0]u8) !void {
         return error.InvalidArgument;
     }
 
-    var f = try std.fs.cwd().openFile(grammar_path.?, .{});
-    defer f.close();
-    const src = try f.readToEndAlloc(alloc, 64 * 1024 * 1024);
+    const cwd = std.Io.Dir.cwd();
+    const src = try cwd.readFileAlloc(io(), grammar_path.?, alloc, .limited(64 * 1024 * 1024));
     defer alloc.free(src);
 
     var astv = try lib.parseEbnf(alloc, src);

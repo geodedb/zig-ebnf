@@ -4,6 +4,15 @@ const ast = @import("ebnf/ast.zig");
 const ebnf_parser = @import("ebnf/parser.zig");
 const emitter = @import("gen/emitter.zig");
 
+const builtin = @import("builtin");
+
+inline fn io() std.Io {
+    return if (builtin.is_test)
+        std.testing.io
+    else
+        std.Io.Threaded.global_single_threaded.io();
+}
+
 pub const Error = ast.Error;
 pub const GenBackend = emitter.GenBackend;
 pub const GenOptions = emitter.GenOptions;
@@ -253,21 +262,23 @@ test "parse and generate GQL grammar when available" {
     // Attempt to open a GQL grammar file.  It may exist in the working
     // directory (e.g. mounted from the user’s upload path) or under
     // /home/oai/share.  Try both locations.
-    var file_opt: ?std.fs.File = null;
+    const cwd = std.Io.Dir.cwd();
+    var file_opt: ?std.Io.File = null;
     // First try the current working directory.
-    file_opt = std.fs.cwd().openFile("gql.ebnf", .{}) catch null;
+    file_opt = cwd.openFile(io(), "gql.ebnf", .{}) catch null;
     if (file_opt == null) {
         // Next try the shared upload directory path used by the test harness.
-        file_opt = std.fs.cwd().openFile("/home/oai/share/gql.ebnf", .{}) catch null;
+        file_opt = cwd.openFile(io(), "/home/oai/share/gql.ebnf", .{}) catch null;
     }
     if (file_opt == null) {
         // Nothing to do if the grammar file doesn’t exist.  The test passes.
         return;
     }
     const file = file_opt.?;
-    defer file.close();
+    defer file.close(io());
     // Read the grammar into memory (limit to 64 MiB).
-    const src_code = try file.readToEndAlloc(alloc, 64 * 1024 * 1024);
+    var file_reader = file.reader(io(), &.{});
+    const src_code = try file_reader.interface.allocRemaining(alloc, .limited(64 * 1024 * 1024));
     defer alloc.free(src_code);
     // Parse the EBNF grammar. Try strict first; if dialect issues, attempt permissive before skipping.
     var astv = parseEbnf(alloc, src_code) catch |e| switch (e) {
@@ -415,8 +426,9 @@ test "generateZig rejects left recursion grammar" {
 // Always parse bundled gql.ebnf (if present in repo) to ensure regressions surface.
 test "parse gql.ebnf permissive" {
     const gpa = std.testing.allocator;
-    if (std.fs.cwd().access("gql.ebnf", .{})) |_| {
-        const src_code = try std.fs.cwd().readFileAlloc(gpa, "gql.ebnf", 64 * 1024 * 1024);
+    const cwd = std.Io.Dir.cwd();
+    if (cwd.access(io(), "gql.ebnf", .{})) |_| {
+        const src_code = try cwd.readFileAlloc(io(), "gql.ebnf", gpa, .limited(64 * 1024 * 1024));
         defer gpa.free(src_code);
         // Try strict first; fall back to permissive.
         var astv = parseEbnf(gpa, src_code) catch |e| switch (e) {
@@ -462,11 +474,11 @@ test "build generated integer module" {
     // Write generated files
     for (gen.files) |f| {
         if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
-            if (idx > 0) try tmp.dir.makePath(f.path[0..idx]);
+            if (idx > 0) try tmp.dir.createDirPath(io(), f.path[0..idx]);
         }
-        var wf = try tmp.dir.createFile(f.path, .{});
-        defer wf.close();
-        try wf.writeAll(f.contents);
+        var wf = try tmp.dir.createFile(io(), f.path, .{});
+        defer wf.close(io());
+        try wf.writeStreamingAll(io(), f.contents);
     }
     // Add a tiny main that calls recognize_integer.
     const main_code =
@@ -474,16 +486,16 @@ test "build generated integer module" {
         \\const gen = @import("integer_gen_build/mod.zig");
         \\pub fn main() !void { try gen.recognize_integer("+42"); }
     ;
-    var main_file = try tmp.dir.createFile("main.zig", .{});
-    defer main_file.close();
-    try main_file.writeAll(main_code);
+    var main_file = try tmp.dir.createFile(io(), "main.zig", .{});
+    defer main_file.close(io());
+    try main_file.writeStreamingAll(io(), main_code);
     // Compile.
-    var child = std.process.Child.init(&[_][]const u8{ "zig", "build-exe", "main.zig" }, gpa);
-    child.cwd_dir = tmp.dir;
-    // no deinit needed for std.process.Child in this Zig version
-    try child.spawn();
-    const term = try child.wait();
-    try std.testing.expect(term == .Exited and term.Exited == 0);
+    var child = try std.process.spawn(io(), .{
+        .argv = &[_][]const u8{ "zig", "build-exe", "main.zig" },
+        .cwd = .{ .dir = tmp.dir },
+    });
+    const term = try child.wait(io());
+    try std.testing.expect(term == .exited and term.exited == 0);
 }
 
 // Optional second build test for integer_set grammar.
@@ -503,33 +515,34 @@ test "build generated integer_set module" {
     defer tmp.cleanup();
     for (gen.files) |f| {
         if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
-            if (idx > 0) try tmp.dir.makePath(f.path[0..idx]);
+            if (idx > 0) try tmp.dir.createDirPath(io(), f.path[0..idx]);
         }
-        var wf = try tmp.dir.createFile(f.path, .{});
-        defer wf.close();
-        try wf.writeAll(f.contents);
+        var wf = try tmp.dir.createFile(io(), f.path, .{});
+        defer wf.close(io());
+        try wf.writeStreamingAll(io(), f.contents);
     }
     const main_code =
         \\const std = @import("std");
         \\const gen = @import("integer_set_gen_build/mod.zig");
         \\pub fn main() !void { try gen.recognize_integer_set("{1,2}"); }
     ;
-    var main_file = try tmp.dir.createFile("main.zig", .{});
-    defer main_file.close();
-    try main_file.writeAll(main_code);
-    var child = std.process.Child.init(&[_][]const u8{ "zig", "build-exe", "main.zig" }, gpa);
-    child.cwd_dir = tmp.dir;
-    // no deinit needed for std.process.Child in this Zig version
-    try child.spawn();
-    const term = try child.wait();
-    try std.testing.expect(term == .Exited and term.Exited == 0);
+    var main_file = try tmp.dir.createFile(io(), "main.zig", .{});
+    defer main_file.close(io());
+    try main_file.writeStreamingAll(io(), main_code);
+    var child = try std.process.spawn(io(), .{
+        .argv = &[_][]const u8{ "zig", "build-exe", "main.zig" },
+        .cwd = .{ .dir = tmp.dir },
+    });
+    const term = try child.wait(io());
+    try std.testing.expect(term == .exited and term.exited == 0);
 }
 
 // Verify stub header comment lists synthetic stubs when permissive mode inserts them.
 test "stub emitter adds synthetic stub header" {
     const gpa = std.testing.allocator;
-    if (std.fs.cwd().access("gql.ebnf", .{})) |_| {
-        const src_code = try std.fs.cwd().readFileAlloc(gpa, "gql.ebnf", 64 * 1024 * 1024);
+    const cwd = std.Io.Dir.cwd();
+    if (cwd.access(io(), "gql.ebnf", .{})) |_| {
+        const src_code = try cwd.readFileAlloc(io(), "gql.ebnf", gpa, .limited(64 * 1024 * 1024));
         defer gpa.free(src_code);
         var astv = parseEbnfOpts(gpa, src_code, .{ .permissive = true }) catch return; // skip if still invalid
         defer astv.deinit();
@@ -586,23 +599,24 @@ test "execute generated integer binary" {
     defer tmp.cleanup();
     for (gen.files) |f| {
         if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
-            if (idx > 0) try tmp.dir.makePath(f.path[0..idx]);
+            if (idx > 0) try tmp.dir.createDirPath(io(), f.path[0..idx]);
         }
-        var wf = try tmp.dir.createFile(f.path, .{});
-        defer wf.close();
-        try wf.writeAll(f.contents);
+        var wf = try tmp.dir.createFile(io(), f.path, .{});
+        defer wf.close(io());
+        try wf.writeStreamingAll(io(), f.contents);
     }
     const main_code =
         \\const std = @import("std");
         \\const gen = @import("integer_exec/mod.zig");
         \\pub fn main() !void { try gen.recognize_integer("-123"); }
     ;
-    var mf = try tmp.dir.createFile("main.zig", .{});
-    defer mf.close();
-    try mf.writeAll(main_code);
-    var child = std.process.Child.init(&[_][]const u8{ "zig", "build-exe", "main.zig" }, gpa);
-    child.cwd_dir = tmp.dir;
-    try child.spawn();
-    const term = try child.wait();
-    try std.testing.expect(term == .Exited and term.Exited == 0);
+    var mf = try tmp.dir.createFile(io(), "main.zig", .{});
+    defer mf.close(io());
+    try mf.writeStreamingAll(io(), main_code);
+    var child = try std.process.spawn(io(), .{
+        .argv = &[_][]const u8{ "zig", "build-exe", "main.zig" },
+        .cwd = .{ .dir = tmp.dir },
+    });
+    const term = try child.wait(io());
+    try std.testing.expect(term == .exited and term.exited == 0);
 }

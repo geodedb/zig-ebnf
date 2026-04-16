@@ -1,10 +1,25 @@
 const std = @import("std");
 const ast = @import("../ebnf/ast.zig");
 
+// Small writer wrapper so we can pass (buffer, allocator) together to emit helpers.
+const Writer = struct {
+    buf: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+
+    fn writeAll(self: *Writer, s: []const u8) !void {
+        try self.buf.appendSlice(self.alloc, s);
+    }
+
+    fn print(self: *Writer, comptime fmt: []const u8, args: anytype) !void {
+        try self.buf.print(self.alloc, fmt, args);
+    }
+};
+
 pub fn emitRecursiveDescent(alloc: std.mem.Allocator, grammar: *const ast.AST, start_rule: []const u8, header: []const u8) ![]u8 {
-    var buf = std.ArrayList(u8){};
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(alloc);
-    const w = buf.writer(alloc);
+    var w_state: Writer = .{ .buf = &buf, .alloc = alloc };
+    const w = &w_state;
     try w.writeAll(header);
     try w.writeAll("const std = @import(\"std\");\n");
     try w.writeAll("pub const RecognizerError = error{Unexpected, Trailing};\n");
@@ -30,7 +45,7 @@ pub fn emitRecursiveDescent(alloc: std.mem.Allocator, grammar: *const ast.AST, s
     return buf.toOwnedSlice(alloc);
 }
 // Statement oriented emission (simpler & clearer for initial RD backend)
-fn emitRuleBody(w: anytype, e: ast.ExprRef, level: usize, counter: *usize) !void {
+fn emitRuleBody(w: *Writer, e: ast.ExprRef, level: usize, counter: *usize) !void {
     switch (e.*) {
         .empty => {
             try indent(w, level);
@@ -51,12 +66,12 @@ fn emitRuleBody(w: anytype, e: ast.ExprRef, level: usize, counter: *usize) !void
     }
 }
 
-fn indent(w: anytype, level: usize) !void {
+fn indent(w: *Writer, level: usize) !void {
     var i: usize = 0;
     while (i < level) : (i += 1) try w.writeAll("    ");
 }
 
-fn emitSeq(w: anytype, items: []ast.ExprRef, level: usize, counter: *usize) !void {
+fn emitSeq(w: *Writer, items: []ast.ExprRef, level: usize, counter: *usize) !void {
     if (items.len == 0) {
         try indent(w, level);
         try w.writeAll("return true;\n");
@@ -78,7 +93,7 @@ fn emitSeq(w: anytype, items: []ast.ExprRef, level: usize, counter: *usize) !voi
     try w.writeAll("return true;\n");
 }
 
-fn emitChoice(w: anytype, alts: []ast.ExprRef, level: usize, counter: *usize) !void {
+fn emitChoice(w: *Writer, alts: []ast.ExprRef, level: usize, counter: *usize) !void {
     for (alts) |alt| {
         try indent(w, level);
         try w.writeAll("{ const m2 = c.save(); if (\n");
@@ -90,35 +105,35 @@ fn emitChoice(w: anytype, alts: []ast.ExprRef, level: usize, counter: *usize) !v
     try w.writeAll("return false;\n");
 }
 
-fn emitOpt(w: anytype, sub: ast.ExprRef, level: usize, counter: *usize) !void {
+fn emitOpt(w: *Writer, sub: ast.ExprRef, level: usize, counter: *usize) !void {
     try indent(w, level);
     try w.writeAll("{ const m = c.save(); if (!");
     try emitInlineExpr(w, sub, counter);
     try w.writeAll(") c.restore(m); } return true;\n");
 }
 
-fn emitRep(w: anytype, sub: ast.ExprRef, level: usize, counter: *usize) !void {
+fn emitRep(w: *Writer, sub: ast.ExprRef, level: usize, counter: *usize) !void {
     try indent(w, level);
     try w.writeAll("while (true) { const m = c.save(); if (!");
     try emitInlineExpr(w, sub, counter);
     try w.writeAll(") { c.restore(m); break; } } return true;\n");
 }
 
-fn emitOptStmt(w: anytype, sub: ast.ExprRef, level: usize, counter: *usize) !void {
+fn emitOptStmt(w: *Writer, sub: ast.ExprRef, level: usize, counter: *usize) !void {
     try indent(w, level);
     try w.writeAll("{ const m1 = c.save(); if (!");
     try emitInlineExpr(w, sub, counter);
     try w.writeAll(") c.restore(m1); }\n");
 }
 
-fn emitRepStmt(w: anytype, sub: ast.ExprRef, level: usize, counter: *usize) !void {
+fn emitRepStmt(w: *Writer, sub: ast.ExprRef, level: usize, counter: *usize) !void {
     try indent(w, level);
     try w.writeAll("while (true) { const m1 = c.save(); if (!");
     try emitInlineExpr(w, sub, counter);
     try w.writeAll(") { c.restore(m1); break; } }\n");
 }
 
-fn emitInlineExpr(w: anytype, e: ast.ExprRef, counter: *usize) !void {
+fn emitInlineExpr(w: *Writer, e: ast.ExprRef, counter: *usize) !void {
     switch (e.*) {
         .empty => try w.writeAll("true"),
         .literal => |lit| try w.print("matchLit(c, \"{s}\")", .{lit}),
@@ -130,7 +145,7 @@ fn emitInlineExpr(w: anytype, e: ast.ExprRef, counter: *usize) !void {
     }
 }
 
-fn inlineSeq(w: anytype, items: []ast.ExprRef, counter: *usize) void {
+fn inlineSeq(w: *Writer, items: []ast.ExprRef, counter: *usize) void {
     const id = counter.*;
     counter.* += 1;
     w.writeAll("(blk") catch return;
@@ -152,7 +167,7 @@ fn inlineSeq(w: anytype, items: []ast.ExprRef, counter: *usize) void {
     w.writeAll(" true; })") catch return;
 }
 
-fn inlineChoice(w: anytype, alts: []ast.ExprRef, counter: *usize) void {
+fn inlineChoice(w: *Writer, alts: []ast.ExprRef, counter: *usize) void {
     const id = counter.*;
     counter.* += 1;
     w.writeAll("(blk") catch return;
@@ -178,7 +193,7 @@ fn inlineChoice(w: anytype, alts: []ast.ExprRef, counter: *usize) void {
     w.writeAll(" false; })") catch return;
 }
 
-fn inlineOpt(w: anytype, sub: ast.ExprRef, counter: *usize) void {
+fn inlineOpt(w: *Writer, sub: ast.ExprRef, counter: *usize) void {
     const id = counter.*;
     counter.* += 1;
     w.writeAll("(blk") catch return;
@@ -194,7 +209,7 @@ fn inlineOpt(w: anytype, sub: ast.ExprRef, counter: *usize) void {
     w.writeAll(" true; })") catch return;
 }
 
-fn inlineRep(w: anytype, sub: ast.ExprRef, counter: *usize) void {
+fn inlineRep(w: *Writer, sub: ast.ExprRef, counter: *usize) void {
     const id = counter.*;
     counter.* += 1;
     w.writeAll("(blk") catch return;
