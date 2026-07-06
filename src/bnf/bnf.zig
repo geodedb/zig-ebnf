@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const gen = @import("gen.zig");
+
 pub const Node = union(enum) {
     seq: []const *Node,
     choice: []const *Node,
@@ -503,4 +505,8 @@ test "bnf: mergeFrom adds and overrides rules" {
     try std.testing.expectEqual(@as(usize, 3), base.ruleCount());
     try std.testing.expect(base.find("b").?.* == .choice);
     try base.validate(std.testing.allocator);
+}
+
+test {
+    _ = gen;
 }
