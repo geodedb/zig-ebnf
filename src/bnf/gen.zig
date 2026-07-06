@@ -44,8 +44,14 @@ pub const GenError = error{ UnknownRule, NoFiniteDerivation, OutOfMemory };
 /// `group`/`rep` cost their child's cost (rep must fire at least once),
 /// `seq` is the saturating sum of its children, `choice` is the min over its
 /// alternatives, and `nonterm` costs whatever its target rule currently
-/// costs (undefined references — which validated grammars won't have — cost
-/// 1). Rules unreachable from a finite derivation settle at
+/// costs PLUS 1 for the indirection itself (undefined references — which
+/// validated grammars won't have — cost 1 before that +1). Charging for the
+/// indirection is what makes minimal-cost descent strictly decrease at every
+/// nonterm hop: without it, a unit-production cycle like `<a> ::= <b> | X`
+/// with `<b> ::= <a>` ties both alternatives of `<a>` at cost 1 and the
+/// first-alt tie-break in `minCostIndex` recurses forever. With the +1,
+/// the escape alternative is strictly cheaper, so the cycle always resolves.
+/// Rules unreachable from a finite derivation settle at
 /// `std.math.maxInt(u32)`.
 pub fn minCost(g: *const bnf.Grammar, gpa: std.mem.Allocator) !std.StringArrayHashMapUnmanaged(u32) {
     var costs: std.StringArrayHashMapUnmanaged(u32) = .{};
@@ -72,6 +78,10 @@ fn satAdd(a: u32, b: u32) u32 {
     return std.math.add(u32, a, b) catch std.math.maxInt(u32);
 }
 
+fn satMul(a: u32, b: u32) u32 {
+    return std.math.mul(u32, a, b) catch std.math.maxInt(u32);
+}
+
 fn nodeCost(n: *const bnf.Node, costs: *const std.StringArrayHashMapUnmanaged(u32)) u32 {
     return switch (n.*) {
         .keyword, .char => 1,
@@ -88,7 +98,9 @@ fn nodeCost(n: *const bnf.Node, costs: *const std.StringArrayHashMapUnmanaged(u3
             for (alts) |a| best = @min(best, nodeCost(a, costs));
             break :blk best;
         },
-        .nonterm => |name| costs.get(name) orelse 1,
+        // +1 charges for the indirection itself so minimal-cost descent
+        // strictly decreases across nonterm hops (see doc comment above).
+        .nonterm => |name| satAdd(costs.get(name) orelse 1, 1),
     };
 }
 
@@ -101,8 +113,22 @@ const Gen = struct {
     out: std.ArrayListUnmanaged(u8) = .{},
     depth: u32 = 0,
 
+    /// Absolute recursion ceiling, independent of (and always >=)
+    /// `opts.max_depth`: a defense-in-depth backstop so a misconfigured or
+    /// unexpectedly large `max_depth` can never let `genRule`/`genNode`
+    /// recursion run away. Once `depth` exceeds this, `overBudget()` reports
+    /// true unconditionally, which forces every subsequent `choice` onto its
+    /// minimal-cost alternative — and per the `nodeCost` fix above, that
+    /// minimal-cost path strictly decreases in cost at every nonterm hop, so
+    /// it is guaranteed to bottom out rather than loop.
+    fn hardDepthLimit(self: *const Gen) u32 {
+        return satAdd(satMul(self.opts.max_depth, 4), 64);
+    }
+
     fn overBudget(self: *const Gen) bool {
-        return self.depth > self.opts.max_depth or self.out.items.len > self.opts.max_len;
+        return self.depth > self.opts.max_depth or
+            self.depth > self.hardDepthLimit() or
+            self.out.items.len > self.opts.max_len;
     }
 
     fn emitToken(self: *Gen, tok: []const u8) !void {
@@ -114,6 +140,9 @@ const Gen = struct {
     fn genRule(self: *Gen, name: []const u8) GenError!void {
         if (self.opts.overrides) |ov| {
             if (ov.get(name)) |pool| {
+                // An override entry with an empty pool is treated as "no
+                // override": fall through to the rule's normal expansion
+                // below rather than emitting nothing.
                 if (pool.len != 0) {
                     const idx = self.cs.next(@intCast(pool.len));
                     try self.emitToken(pool[idx]);
@@ -249,6 +278,70 @@ test "gen: unknown rule and infinite grammar errors" {
     var cs = ChoiceSource{ .bytes = .{ .data = &.{} } };
     try std.testing.expectError(error.UnknownRule, generate(std.testing.allocator, &g, .{ .start = "nope" }, &cs));
     try std.testing.expectError(error.NoFiniteDerivation, generate(std.testing.allocator, &g, .{ .start = "loop" }, &cs));
+}
+
+test "gen: unit-production cycle with escape terminates (recursive alt first)" {
+    // Regression: <a> ::= <b> | X ; <b> ::= <a> used to tie in nodeCost (both
+    // alternatives of <a> costed 1, since .nonterm didn't charge for the
+    // indirection), so minCostIndex's first-alt tie-break always picked the
+    // recursive <b> alt and generation recursed a -> b -> a -> b ... until
+    // stack overflow (SIGSEGV) once the byte stream was exhausted.
+    const src =
+        \\<a> ::=
+        \\    <b>
+        \\  | X
+        \\
+        \\<b> ::=
+        \\    <a>
+    ;
+    var g = try bnf.parse(std.testing.allocator, src);
+    defer g.deinit();
+    var cs = ChoiceSource{ .bytes = .{ .data = &.{} } };
+    const out = try generate(std.testing.allocator, &g, .{ .start = "a" }, &cs);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("X", out);
+}
+
+test "gen: longer unit-production chain with escape terminates" {
+    // Same shape as above but through a 3-hop unit chain (<a> -> <b> -> <c> ->
+    // <a>) to make sure the +1-per-indirection cost strictly decreases across
+    // multiple hops, not just a single tied pair.
+    const src =
+        \\<a> ::=
+        \\    <b>
+        \\  | X
+        \\
+        \\<b> ::=
+        \\    <c>
+        \\
+        \\<c> ::=
+        \\    <a>
+    ;
+    var g = try bnf.parse(std.testing.allocator, src);
+    defer g.deinit();
+    var cs = ChoiceSource{ .bytes = .{ .data = &.{} } };
+    const out = try generate(std.testing.allocator, &g, .{ .start = "a" }, &cs);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("X", out);
+}
+
+test "gen: override with empty pool falls through to normal expansion" {
+    const src =
+        \\<s> ::=
+        \\    SET <identifier>
+        \\
+        \\<identifier> ::=
+        \\    A
+    ;
+    var g = try bnf.parse(std.testing.allocator, src);
+    defer g.deinit();
+    var ov = Overrides{};
+    defer ov.deinit(std.testing.allocator);
+    try ov.put(std.testing.allocator, "identifier", &.{});
+    var cs = ChoiceSource{ .bytes = .{ .data = &.{} } };
+    const out = try generate(std.testing.allocator, &g, .{ .start = "s", .overrides = &ov }, &cs);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("SET A", out);
 }
 
 test "gen: char terminals emitted, impl_defined silent" {
