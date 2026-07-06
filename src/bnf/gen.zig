@@ -78,10 +78,6 @@ fn satAdd(a: u32, b: u32) u32 {
     return std.math.add(u32, a, b) catch std.math.maxInt(u32);
 }
 
-fn satMul(a: u32, b: u32) u32 {
-    return std.math.mul(u32, a, b) catch std.math.maxInt(u32);
-}
-
 fn nodeCost(n: *const bnf.Node, costs: *const std.StringArrayHashMapUnmanaged(u32)) u32 {
     return switch (n.*) {
         .keyword, .char => 1,
@@ -113,22 +109,21 @@ const Gen = struct {
     out: std.ArrayListUnmanaged(u8) = .{},
     depth: u32 = 0,
 
-    /// Absolute recursion ceiling, independent of (and always >=)
-    /// `opts.max_depth`: a defense-in-depth backstop so a misconfigured or
-    /// unexpectedly large `max_depth` can never let `genRule`/`genNode`
-    /// recursion run away. Once `depth` exceeds this, `overBudget()` reports
-    /// true unconditionally, which forces every subsequent `choice` onto its
-    /// minimal-cost alternative — and per the `nodeCost` fix above, that
-    /// minimal-cost path strictly decreases in cost at every nonterm hop, so
-    /// it is guaranteed to bottom out rather than loop.
-    fn hardDepthLimit(self: *const Gen) u32 {
-        return satAdd(satMul(self.opts.max_depth, 4), 64);
-    }
-
+    // Termination rests on two cost invariants, not on a depth ceiling:
+    // (1) `nodeCost` charges +1 per nonterm indirection, so the minimal-cost
+    //     path selected once `overBudget()` trips strictly decreases in
+    //     remaining cost at every hop and must bottom out; and
+    // (2) `genNode` never descends into an infinite-cost (maxInt) region —
+    //     `.choice` replaces an infinite-cost pick with the minimal-cost
+    //     alternative and `.opt` skips an infinite-cost child — so every
+    //     region ever entered has a finite derivation, and every nonterm hop
+    //     inside it raises `depth` toward the `max_depth` trip point.
+    // (A previous revision carried a redundant `4 * max_depth + 64` "hard
+    // ceiling" here; it was dead code — `depth > max_depth` in the same
+    // check always fired first — and could not have stopped bare seq/nonterm
+    // recursion anyway, so it was removed rather than kept as false safety.)
     fn overBudget(self: *const Gen) bool {
-        return self.depth > self.opts.max_depth or
-            self.depth > self.hardDepthLimit() or
-            self.out.items.len > self.opts.max_len;
+        return self.depth > self.opts.max_depth or self.out.items.len > self.opts.max_len;
     }
 
     fn emitToken(self: *Gen, tok: []const u8) !void {
@@ -169,17 +164,36 @@ const Gen = struct {
             .seq => |kids| for (kids) |k| try self.genNode(k),
             .group => |k| try self.genNode(k),
             .choice => |alts| {
-                const idx = if (self.overBudget())
+                var idx = if (self.overBudget())
                     minCostIndex(alts, self.costs)
                 else
                     self.cs.next(@intCast(alts.len));
+                // Never enter an infinite-cost region: if the choice stream
+                // picked an alternative whose minimal derivation cost is
+                // maxInt (an escape-less cycle like `<doom> ::= <doom> Y`),
+                // no sequence of future decisions can ever finish it — its
+                // body may contain no further choice/opt/rep decision point
+                // at which to bail out. Discard the pick and take the
+                // minimal-cost alternative instead.
+                if (nodeCost(alts[idx], self.costs) == std.math.maxInt(u32)) {
+                    idx = minCostIndex(alts, self.costs);
+                }
                 try self.genNode(alts[idx]);
             },
             .opt => |k| {
                 if (self.overBudget()) return;
+                // Same guard as `.choice`: an infinite-cost child can never
+                // derive a finite sentence, so descending would never
+                // return. Skipping is always valid for an optional.
+                if (nodeCost(k, self.costs) == std.math.maxInt(u32)) return;
                 if (self.cs.next(2) == 1) try self.genNode(k);
             },
             .rep => |k| {
+                // No infinite-cost guard needed here: a rep's cost equals
+                // its child's, so an infinite-cost rep child makes every
+                // enclosing seq/choice-alt/rule infinite-cost too — and the
+                // `.choice`/`.opt` guards above plus `generate`'s start-rule
+                // NoFiniteDerivation check mean such a rep is unreachable.
                 try self.genNode(k);
                 while (!self.overBudget() and self.cs.next(2) == 1) {
                     try self.genNode(k);
@@ -323,6 +337,67 @@ test "gen: longer unit-production chain with escape terminates" {
     const out = try generate(std.testing.allocator, &g, .{ .start = "a" }, &cs);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("X", out);
+}
+
+test "gen: byte stream cannot select an infinite-cost choice alternative" {
+    // Regression: on the under-budget path, cs.next used to freely select an
+    // alternative whose minimal cost is maxInt (an escape-less infinite
+    // region). <doom>'s body is bare seq/nonterm with no choice/opt/rep
+    // decision point, so overBudget() was never consulted again and the
+    // recursion never stopped (SIGSEGV).
+    const src =
+        \\<s> ::=
+        \\    X
+        \\  | <doom>
+        \\
+        \\<doom> ::=
+        \\    <doom> Y
+    ;
+    var g = try bnf.parse(std.testing.allocator, src);
+    defer g.deinit();
+    var cs = ChoiceSource{ .bytes = .{ .data = &.{1} } };
+    const out = try generate(std.testing.allocator, &g, .{ .start = "s" }, &cs);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("X", out);
+}
+
+test "gen: prng source never enters infinite-cost region (seed sweep)" {
+    const src =
+        \\<s> ::=
+        \\    X
+        \\  | <doom>
+        \\
+        \\<doom> ::=
+        \\    <doom> Y
+    ;
+    var g = try bnf.parse(std.testing.allocator, src);
+    defer g.deinit();
+    var seed: u64 = 0;
+    while (seed <= 20) : (seed += 1) {
+        var prng = std.Random.DefaultPrng.init(seed);
+        var cs = ChoiceSource{ .prng = &prng };
+        const out = try generate(std.testing.allocator, &g, .{ .start = "s" }, &cs);
+        defer std.testing.allocator.free(out);
+        // "X" is the only finite sentence in this grammar.
+        try std.testing.expectEqualStrings("X", out);
+    }
+}
+
+test "gen: opt wrapping an escape-less cycle is skipped" {
+    const src =
+        \\<s> ::=
+        \\    A [ <doom> ]
+        \\
+        \\<doom> ::=
+        \\    <doom> Y
+    ;
+    var g = try bnf.parse(std.testing.allocator, src);
+    defer g.deinit();
+    // byte 1 asks to take the optional, but its child can never finish.
+    var cs = ChoiceSource{ .bytes = .{ .data = &.{1} } };
+    const out = try generate(std.testing.allocator, &g, .{ .start = "s" }, &cs);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings("A", out);
 }
 
 test "gen: override with empty pool falls through to normal expansion" {
