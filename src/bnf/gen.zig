@@ -80,7 +80,7 @@ fn satAdd(a: u32, b: u32) u32 {
 
 fn nodeCost(n: *const bnf.Node, costs: *const std.StringArrayHashMapUnmanaged(u32)) u32 {
     return switch (n.*) {
-        .keyword, .char => 1,
+        .keyword, .char, .literal => 1,
         .impl_defined => 0,
         .opt => 0,
         .group, .rep => |k| nodeCost(k, costs),
@@ -155,6 +155,7 @@ const Gen = struct {
             .char => |c| {
                 if (c != ' ') try self.emitToken(&[1]u8{c});
             },
+            .literal => |s| try self.emitToken(s),
             .impl_defined => {},
             .nonterm => |name| {
                 self.depth += 1;
