@@ -4,6 +4,8 @@ const ast = @import("ebnf/ast.zig");
 const ebnf_parser = @import("ebnf/parser.zig");
 const emitter = @import("gen/emitter.zig");
 
+pub const bnf = @import("bnf/bnf.zig");
+
 pub const Error = ast.Error;
 pub const GenBackend = emitter.GenBackend;
 pub const GenOptions = emitter.GenOptions;
@@ -605,4 +607,8 @@ test "execute generated integer binary" {
     try child.spawn();
     const term = try child.wait();
     try std.testing.expect(term == .Exited and term.Exited == 0);
+}
+
+test {
+    _ = bnf;
 }
