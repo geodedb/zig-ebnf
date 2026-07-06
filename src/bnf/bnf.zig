@@ -202,9 +202,9 @@ fn parseBody(a: std.mem.Allocator, body: []const u8, names: *const NameSet) Pars
         n.* = .{ .char = c };
         return n;
     }
-    // Raw multi-char symbol literal (e.g. `::=`... no — `::`, `<-[`, `<>`,
-    // `||`): a whole body reducing to one non-blank line built entirely from
-    // punctuation, that isn't itself a `<known rule name>` alias.
+    // Raw multi-char symbol literal (e.g. `::`, `<-[`, `<>`, `||`): a whole
+    // body reducing to one non-blank line built entirely from punctuation,
+    // that isn't itself a `<known rule name>` alias.
     if (rawSymbolBody(body, names)) |s| {
         const n = try a.create(Node);
         n.* = .{ .literal = try a.dupe(u8, s) };
