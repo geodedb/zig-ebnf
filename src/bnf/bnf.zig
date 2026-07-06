@@ -28,7 +28,103 @@ pub const Grammar = struct {
     pub fn ruleCount(self: *const Grammar) usize {
         return self.rules.count();
     }
+
+    pub const ValidateError = error{ UndefinedNonterminal, OutOfMemory };
+
+    /// Returns error.UndefinedNonterminal iff `undefinedNonterminals` is non-empty.
+    pub fn validate(self: *const Grammar, gpa: std.mem.Allocator) ValidateError!void {
+        const undef = try self.undefinedNonterminals(gpa);
+        defer gpa.free(undef);
+        if (undef.len != 0) return error.UndefinedNonterminal;
+    }
+
+    /// Names referenced via `.nonterm` in any rule body but not present as a rule
+    /// name. Caller frees the returned slice with `gpa`; the strings themselves
+    /// point into the grammar's arena.
+    pub fn undefinedNonterminals(self: *const Grammar, gpa: std.mem.Allocator) ![]const []const u8 {
+        var seen: std.StringArrayHashMapUnmanaged(void) = .{};
+        defer seen.deinit(gpa);
+        for (self.rules.values()) |node| {
+            try collectNonterms(node, gpa, &seen);
+        }
+        var undef: std.ArrayListUnmanaged([]const u8) = .{};
+        errdefer undef.deinit(gpa);
+        for (seen.keys()) |name| {
+            if (!self.rules.contains(name)) try undef.append(gpa, name);
+        }
+        return undef.toOwnedSlice(gpa);
+    }
+
+    /// Every `.keyword` terminal referenced in any rule body, deduplicated.
+    /// Caller deinits the returned map with the same `gpa`; keys point into the
+    /// grammar's arena.
+    pub fn keywords(self: *const Grammar, gpa: std.mem.Allocator) !std.StringArrayHashMapUnmanaged(void) {
+        var kw: std.StringArrayHashMapUnmanaged(void) = .{};
+        errdefer kw.deinit(gpa);
+        for (self.rules.values()) |node| {
+            try collectKeywords(node, gpa, &kw);
+        }
+        return kw;
+    }
+
+    /// Copies every rule of `other` into `self`, deep-copying nodes into self's
+    /// arena so `self` remains valid after `other` is deinit'd. Overwrites rules
+    /// with the same name.
+    pub fn mergeFrom(self: *Grammar, gpa: std.mem.Allocator, other: *const Grammar) !void {
+        const a = self.arena.allocator();
+        var it = other.rules.iterator();
+        while (it.next()) |entry| {
+            const name = try a.dupe(u8, entry.key_ptr.*);
+            const node = try deepCopy(a, entry.value_ptr.*);
+            const gop = try self.rules.getOrPut(a, name);
+            gop.value_ptr.* = node;
+        }
+        _ = gpa; // unused: all allocations go through self's arena so merged rules
+        // outlive `other`'s own arena/allocator.
+    }
 };
+
+fn collectNonterms(n: *const Node, gpa: std.mem.Allocator, seen: *std.StringArrayHashMapUnmanaged(void)) std.mem.Allocator.Error!void {
+    switch (n.*) {
+        .nonterm => |name| try seen.put(gpa, name, {}),
+        .seq, .choice => |kids| for (kids) |k| try collectNonterms(k, gpa, seen),
+        .opt, .group, .rep => |k| try collectNonterms(k, gpa, seen),
+        else => {},
+    }
+}
+
+fn collectKeywords(n: *const Node, gpa: std.mem.Allocator, kw: *std.StringArrayHashMapUnmanaged(void)) std.mem.Allocator.Error!void {
+    switch (n.*) {
+        .keyword => |name| try kw.put(gpa, name, {}),
+        .seq, .choice => |kids| for (kids) |k| try collectKeywords(k, gpa, kw),
+        .opt, .group, .rep => |k| try collectKeywords(k, gpa, kw),
+        else => {},
+    }
+}
+
+fn deepCopy(a: std.mem.Allocator, n: *const Node) std.mem.Allocator.Error!*Node {
+    const copy = try a.create(Node);
+    switch (n.*) {
+        .seq => |kids| {
+            const out = try a.alloc(*Node, kids.len);
+            for (kids, 0..) |k, i| out[i] = try deepCopy(a, k);
+            copy.* = .{ .seq = out };
+        },
+        .choice => |kids| {
+            const out = try a.alloc(*Node, kids.len);
+            for (kids, 0..) |k, i| out[i] = try deepCopy(a, k);
+            copy.* = .{ .choice = out };
+        },
+        .opt => |k| copy.* = .{ .opt = try deepCopy(a, k) },
+        .group => |k| copy.* = .{ .group = try deepCopy(a, k) },
+        .rep => |k| copy.* = .{ .rep = try deepCopy(a, k) },
+        .keyword => |s| copy.* = .{ .keyword = try a.dupe(u8, s) },
+        .char => |c| copy.* = .{ .char = c },
+        .nonterm => |s| copy.* = .{ .nonterm = try a.dupe(u8, s) },
+        .impl_defined => copy.* = .impl_defined,
+    }
+    return copy;
+}
 
 pub fn parse(gpa: std.mem.Allocator, src: []const u8) ParseError!Grammar {
     var g = Grammar{
@@ -347,4 +443,64 @@ test "bnf: duplicate rule rejected" {
         \\    Y
     ;
     try std.testing.expectError(error.DuplicateRule, parse(std.testing.allocator, src));
+}
+
+test "bnf: undefined nonterminal detected" {
+    const src =
+        \\<a> ::=
+        \\    <missing> X
+    ;
+    var g = try parse(std.testing.allocator, src);
+    defer g.deinit();
+    try std.testing.expectError(error.UndefinedNonterminal, g.validate(std.testing.allocator));
+    const undef = try g.undefinedNonterminals(std.testing.allocator);
+    defer std.testing.allocator.free(undef);
+    try std.testing.expectEqual(@as(usize, 1), undef.len);
+    try std.testing.expectEqualStrings("missing", undef[0]);
+}
+
+test "bnf: keywords collects all CAPS terminals once" {
+    const src =
+        \\<a> ::=
+        \\    START TRANSACTION [ READ { ONLY | WRITE } ]
+        \\
+        \\<b> ::=
+        \\    COMMIT
+        \\  | START
+    ;
+    var g = try parse(std.testing.allocator, src);
+    defer g.deinit();
+    var kw = try g.keywords(std.testing.allocator);
+    defer kw.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 6), kw.count());
+    try std.testing.expect(kw.contains("TRANSACTION"));
+    try std.testing.expect(kw.contains("ONLY"));
+}
+
+test "bnf: mergeFrom adds and overrides rules" {
+    const base_src =
+        \\<a> ::=
+        \\    X
+        \\
+        \\<b> ::=
+        \\    Y
+    ;
+    const ext_src =
+        \\<b> ::=
+        \\    Y
+        \\  | Z <c>
+        \\
+        \\<c> ::=
+        \\    W
+    ;
+    var base = try parse(std.testing.allocator, base_src);
+    defer base.deinit();
+    var ext = try parse(std.testing.allocator, ext_src);
+    defer ext.deinit();
+    try base.mergeFrom(std.testing.allocator, &ext);
+    ext.deinit();
+    ext = try parse(std.testing.allocator, ext_src); // prove deep copy: base survives ext death
+    try std.testing.expectEqual(@as(usize, 3), base.ruleCount());
+    try std.testing.expect(base.find("b").?.* == .choice);
+    try base.validate(std.testing.allocator);
 }
