@@ -48,12 +48,12 @@ pub const Grammar = struct {
     /// name. Caller frees the returned slice with `gpa`; the strings themselves
     /// point into the grammar's arena.
     pub fn undefinedNonterminals(self: *const Grammar, gpa: std.mem.Allocator) ![]const []const u8 {
-        var seen: std.StringArrayHashMapUnmanaged(void) = .{};
+        var seen: std.StringArrayHashMapUnmanaged(void) = .empty;
         defer seen.deinit(gpa);
         for (self.rules.values()) |node| {
             try collectNonterms(node, gpa, &seen);
         }
-        var undef: std.ArrayListUnmanaged([]const u8) = .{};
+        var undef: std.ArrayListUnmanaged([]const u8) = .empty;
         errdefer undef.deinit(gpa);
         for (seen.keys()) |name| {
             if (!self.rules.contains(name)) try undef.append(gpa, name);
@@ -65,7 +65,7 @@ pub const Grammar = struct {
     /// Caller deinits the returned map with the same `gpa`; keys point into the
     /// grammar's arena.
     pub fn keywords(self: *const Grammar, gpa: std.mem.Allocator) !std.StringArrayHashMapUnmanaged(void) {
-        var kw: std.StringArrayHashMapUnmanaged(void) = .{};
+        var kw: std.StringArrayHashMapUnmanaged(void) = .empty;
         errdefer kw.deinit(gpa);
         for (self.rules.values()) |node| {
             try collectKeywords(node, gpa, &kw);
@@ -136,13 +136,13 @@ fn deepCopy(a: std.mem.Allocator, n: *const Node) std.mem.Allocator.Error!*Node 
 pub fn parse(gpa: std.mem.Allocator, src: []const u8) ParseError!Grammar {
     var g = Grammar{
         .arena = std.heap.ArenaAllocator.init(gpa),
-        .rules = .{},
+        .rules = .empty,
     };
     errdefer g.deinit();
     const a = g.arena.allocator();
 
     // 1. Split into (name, raw body) productions at column-0 `<...> ::=` headers.
-    var headers: std.ArrayListUnmanaged(struct { name: []const u8, body_start: usize }) = .{};
+    var headers: std.ArrayListUnmanaged(struct { name: []const u8, body_start: usize }) = .empty;
     defer headers.deinit(gpa);
     var it = std.mem.splitScalar(u8, src, '\n');
     var offset: usize = 0;
@@ -157,7 +157,7 @@ pub fn parse(gpa: std.mem.Allocator, src: []const u8) ParseError!Grammar {
     // into `g.rules`) so body-parsing can distinguish a genuine nonterminal
     // alias like `<left angle bracket>` from a raw multi-char symbol literal
     // that merely starts with `<`, e.g. `<-[` or `<>` (see `rawSymbolBody`).
-    var names: NameSet = .{};
+    var names: NameSet = .empty;
     defer names.deinit(gpa);
     for (headers.items) |h| {
         try names.put(gpa, h.name, {});
@@ -239,7 +239,7 @@ fn singleCharBody(body: []const u8) ?u8 {
             found = ' ';
         } else {
             // a line of trailing spaces only (e.g. the <space> rule) collapses
-            const trimmed = std.mem.trimRight(u8, content, " ");
+            const trimmed = std.mem.trimEnd(u8, content, " ");
             if (trimmed.len == 0) {
                 if (found != null) return null;
                 found = ' ';
@@ -271,7 +271,7 @@ fn rawSymbolBody(body: []const u8, names: *const NameSet) ?[]const u8 {
         if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
         var k: usize = 0;
         while (k < 4 and k < line.len and line[k] == ' ') k += 1;
-        const c = std.mem.trimRight(u8, line[k..], " ");
+        const c = std.mem.trimEnd(u8, line[k..], " ");
         if (c.len == 0) continue;
         if (content != null) return null; // more than one non-blank line: not this shape
         content = c;
@@ -305,7 +305,7 @@ const BodyParser = struct {
     }
 
     fn parseChoice(self: *BodyParser) ParseError!*Node {
-        var alts: std.ArrayListUnmanaged(*Node) = .{};
+        var alts: std.ArrayListUnmanaged(*Node) = .empty;
         self.skipWs();
         // A handful of ISO/IEC 39075 GQL artifact choice bodies have a blank
         // line before the first `| ALTERNATIVE` branch (e.g. `<pre-reserved
@@ -330,7 +330,7 @@ const BodyParser = struct {
     }
 
     fn parseSeq(self: *BodyParser) ParseError!*Node {
-        var elems: std.ArrayListUnmanaged(*Node) = .{};
+        var elems: std.ArrayListUnmanaged(*Node) = .empty;
         while (try self.parseElement()) |e| try elems.append(self.a, e);
         if (elems.items.len == 0) return error.SyntaxError;
         if (elems.items.len == 1) return elems.items[0];

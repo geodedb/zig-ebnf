@@ -54,7 +54,7 @@ pub const GenError = error{ UnknownRule, NoFiniteDerivation, OutOfMemory };
 /// Rules unreachable from a finite derivation settle at
 /// `std.math.maxInt(u32)`.
 pub fn minCost(g: *const bnf.Grammar, gpa: std.mem.Allocator) !std.StringArrayHashMapUnmanaged(u32) {
-    var costs: std.StringArrayHashMapUnmanaged(u32) = .{};
+    var costs: std.StringArrayHashMapUnmanaged(u32) = .empty;
     errdefer costs.deinit(gpa);
     for (g.rules.keys()) |name| {
         try costs.put(gpa, name, std.math.maxInt(u32));
@@ -106,7 +106,7 @@ const Gen = struct {
     opts: GenOptions,
     cs: *ChoiceSource,
     costs: *const std.StringArrayHashMapUnmanaged(u32),
-    out: std.ArrayListUnmanaged(u8) = .{},
+    out: std.ArrayListUnmanaged(u8) = .empty,
     depth: u32 = 0,
 
     // Termination rests on two cost invariants, not on a depth ceiling:

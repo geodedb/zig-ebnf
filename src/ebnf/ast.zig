@@ -86,7 +86,7 @@ pub const AST = struct {
     pub fn collectTerminals(self: *const AST, alloc: std.mem.Allocator) ![][]const u8 {
         var seen = std.StringHashMap(void).init(alloc);
         defer seen.deinit();
-        var out = std.ArrayList([]const u8){};
+        var out: std.ArrayList([]const u8) = .empty;
         errdefer out.deinit(alloc);
 
         for (self.rules) |r| {
@@ -134,9 +134,9 @@ pub const AST = struct {
 
     pub fn ensureDefinedSymbols(self: *const AST) !void {
         // Use ident occurrence table for span-aware undefined symbol reporting.
-        var undef_list = std.ArrayList([]const u8){};
+        var undef_list: std.ArrayList([]const u8) = .empty;
         defer undef_list.deinit(self.alloc);
-        var spans = std.ArrayList(rt.Span){};
+        var spans: std.ArrayList(rt.Span) = .empty;
         defer spans.deinit(self.alloc);
         // Heuristic: treat ALL_CAPS (letters, digits, underscore) identifiers as implicit
         // lexer-provided token symbols so large external grammars (e.g. gql.ebnf) that
@@ -308,7 +308,7 @@ pub const AST = struct {
 
         for (self.rules) |r| {
             // DFS over leading nonterminals
-            var stack = std.ArrayList([]const u8){};
+            var stack: std.ArrayList([]const u8) = .empty;
             defer stack.deinit(temp_alloc);
             try stack.append(temp_alloc, r.name);
             if (try dfsLeftRec(self, temp_alloc, &nulls, r.name, &stack)) {
@@ -361,7 +361,7 @@ pub const AST = struct {
             }
         }
         if (has_stub) return; // relaxed in permissive ingestion
-        var q = std.ArrayList([]const u8){};
+        var q: std.ArrayList([]const u8) = .empty;
         defer q.deinit(self.alloc);
         var seen = std.StringHashMap(bool).init(self.alloc);
         defer seen.deinit();
@@ -425,11 +425,11 @@ pub fn destroyExpr(alloc: std.mem.Allocator, e: ExprRef) void {
             destroyExpr(alloc, sub);
             alloc.destroy(e);
         },
-        .literal => |_| {
+        .literal => {
             // Literal slice memory freed separately via AST.literals tracking.
             alloc.destroy(e);
         },
-        .ident => |_| alloc.destroy(e),
-        .empty => |_| alloc.destroy(e),
+        .ident => alloc.destroy(e),
+        .empty => alloc.destroy(e),
     }
 }
