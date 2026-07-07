@@ -342,9 +342,9 @@ test "parse and generate GQL grammar when available" {
     // /home/oai/share.  Try both locations.
     const src_code = (try readFileIfExists(alloc, "gql.ebnf")) orelse
         (try readFileIfExists(alloc, "/home/oai/share/gql.ebnf")) orelse {
-            // Nothing to do if the grammar file doesn’t exist.  The test passes.
-            return;
-        };
+        // Nothing to do if the grammar file doesn’t exist.  The test passes.
+        return;
+    };
     defer alloc.free(src_code);
     // Parse the EBNF grammar. Try strict first; if dialect issues, attempt permissive before skipping.
     var astv = parseEbnf(alloc, src_code) catch |e| switch (e) {
