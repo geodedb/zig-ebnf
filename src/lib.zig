@@ -4,6 +4,8 @@ const ast = @import("ebnf/ast.zig");
 const ebnf_parser = @import("ebnf/parser.zig");
 const emitter = @import("gen/emitter.zig");
 
+pub const bnf = @import("bnf/bnf.zig");
+
 const builtin = @import("builtin");
 
 inline fn io() std.Io {
@@ -11,6 +13,82 @@ inline fn io() std.Io {
         std.testing.io
     else
         std.Io.Threaded.global_single_threaded.io();
+}
+
+// Zig 0.16 moved file/dir/process I/O behind an explicit `Io` interface
+// (`std.Io.Dir`/`std.Io.File`, `std.process.spawn(io, ...)`), gutting the
+// synchronous `std.fs`/`std.process.Child` APIs that 0.15.x still uses.
+// `std.Io` gained a `Dir` declaration only in 0.16, so it doubles as a
+// reliable comptime version discriminator for the handful of test helpers
+// below that need to speak both dialects.
+const io_has_dir = @hasDecl(std.Io, "Dir");
+
+/// Reads `path` relative to (or as an absolute override of) the cwd, using
+/// whichever synchronous/`Io`-threaded file API the active Zig version
+/// exposes. Returns `null` if the file cannot be opened (e.g. absent).
+fn readFileIfExists(gpa: std.mem.Allocator, path: []const u8) !?[]const u8 {
+    if (comptime io_has_dir) {
+        const cwd = std.Io.Dir.cwd();
+        const file = cwd.openFile(io(), path, .{}) catch return null;
+        defer file.close(io());
+        var file_reader = file.reader(io(), &.{});
+        return try file_reader.interface.allocRemaining(gpa, .limited(64 * 1024 * 1024));
+    } else {
+        const file = std.fs.cwd().openFile(path, .{}) catch return null;
+        defer file.close();
+        return try file.readToEndAlloc(gpa, 64 * 1024 * 1024);
+    }
+}
+
+/// Writes every generated file (creating parent directories as needed) into
+/// `dir`, which is `std.Io.Dir` on 0.16 and `std.fs.Dir` on 0.15 — the
+/// `anytype` param plus `comptime io_has_dir` branch keeps each dead branch
+/// from ever being semantically analyzed against the wrong type.
+fn writeGeneratedFiles(dir: anytype, files: []const GeneratedFile) !void {
+    if (comptime io_has_dir) {
+        for (files) |f| {
+            if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
+                if (idx > 0) try dir.createDirPath(io(), f.path[0..idx]);
+            }
+            var wf = try dir.createFile(io(), f.path, .{});
+            defer wf.close(io());
+            try wf.writeStreamingAll(io(), f.contents);
+        }
+    } else {
+        for (files) |f| {
+            if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
+                if (idx > 0) try dir.makePath(f.path[0..idx]);
+            }
+            var wf = try dir.createFile(f.path, .{});
+            defer wf.close();
+            try wf.writeAll(f.contents);
+        }
+    }
+}
+
+/// Writes `main.zig` containing `main_code` into `dir`, compiles it with
+/// `zig build-exe`, runs it, and reports whether it exited successfully.
+fn writeMainAndCompileRun(dir: anytype, gpa: std.mem.Allocator, main_code: []const u8) !bool {
+    if (comptime io_has_dir) {
+        var main_file = try dir.createFile(io(), "main.zig", .{});
+        defer main_file.close(io());
+        try main_file.writeStreamingAll(io(), main_code);
+        var child = try std.process.spawn(io(), .{
+            .argv = &[_][]const u8{ "zig", "build-exe", "main.zig" },
+            .cwd = .{ .dir = dir },
+        });
+        const term = try child.wait(io());
+        return term == .exited and term.exited == 0;
+    } else {
+        var main_file = try dir.createFile("main.zig", .{});
+        defer main_file.close();
+        try main_file.writeAll(main_code);
+        var child = std.process.Child.init(&[_][]const u8{ "zig", "build-exe", "main.zig" }, gpa);
+        child.cwd_dir = dir;
+        try child.spawn();
+        const term = try child.wait();
+        return term == .Exited and term.Exited == 0;
+    }
 }
 
 pub const Error = ast.Error;
@@ -262,23 +340,11 @@ test "parse and generate GQL grammar when available" {
     // Attempt to open a GQL grammar file.  It may exist in the working
     // directory (e.g. mounted from the user’s upload path) or under
     // /home/oai/share.  Try both locations.
-    const cwd = std.Io.Dir.cwd();
-    var file_opt: ?std.Io.File = null;
-    // First try the current working directory.
-    file_opt = cwd.openFile(io(), "gql.ebnf", .{}) catch null;
-    if (file_opt == null) {
-        // Next try the shared upload directory path used by the test harness.
-        file_opt = cwd.openFile(io(), "/home/oai/share/gql.ebnf", .{}) catch null;
-    }
-    if (file_opt == null) {
+    const src_code = (try readFileIfExists(alloc, "gql.ebnf")) orelse
+        (try readFileIfExists(alloc, "/home/oai/share/gql.ebnf")) orelse {
         // Nothing to do if the grammar file doesn’t exist.  The test passes.
         return;
-    }
-    const file = file_opt.?;
-    defer file.close(io());
-    // Read the grammar into memory (limit to 64 MiB).
-    var file_reader = file.reader(io(), &.{});
-    const src_code = try file_reader.interface.allocRemaining(alloc, .limited(64 * 1024 * 1024));
+    };
     defer alloc.free(src_code);
     // Parse the EBNF grammar. Try strict first; if dialect issues, attempt permissive before skipping.
     var astv = parseEbnf(alloc, src_code) catch |e| switch (e) {
@@ -426,33 +492,27 @@ test "generateZig rejects left recursion grammar" {
 // Always parse bundled gql.ebnf (if present in repo) to ensure regressions surface.
 test "parse gql.ebnf permissive" {
     const gpa = std.testing.allocator;
-    const cwd = std.Io.Dir.cwd();
-    if (cwd.access(io(), "gql.ebnf", .{})) |_| {
-        const src_code = try cwd.readFileAlloc(io(), "gql.ebnf", gpa, .limited(64 * 1024 * 1024));
-        defer gpa.free(src_code);
-        // Try strict first; fall back to permissive.
-        var astv = parseEbnf(gpa, src_code) catch |e| switch (e) {
-            Error.SyntaxError, Error.UndefinedSymbol => parseEbnfOpts(gpa, src_code, .{ .permissive = true }) catch |e2| switch (e2) {
-                Error.SyntaxError, Error.UndefinedSymbol => return, // still invalid; skip silently
-                else => return e2,
-            },
-            else => return e,
-        };
-        defer astv.deinit();
-        try std.testing.expect(astv.rules.len > 0);
-        // Basic generate sanity if we can resolve start rule from first rule name.
-        const start_rule = astv.rules[0].name;
-        var gen = generateZig(gpa, &astv, .{ .backend = .RecursiveDescent, .module_name = "gql_embedded", .start_rule = start_rule }) catch |e| switch (e) {
-            // If advanced validations fail (e.g., left recursion) still allow parse test to pass.
-            Error.LeftRecursion, Error.EmptyRepetition, Error.UnreachableRule => return,
-            else => return e,
-        };
-        defer gen.deinit(gpa);
-        try std.testing.expect(gen.files.len > 0);
-    } else |_| {
-        // If file missing, treat as no-op.
-        return;
-    }
+    const src_code = (try readFileIfExists(gpa, "gql.ebnf")) orelse return; // missing; no-op
+    defer gpa.free(src_code);
+    // Try strict first; fall back to permissive.
+    var astv = parseEbnf(gpa, src_code) catch |e| switch (e) {
+        Error.SyntaxError, Error.UndefinedSymbol => parseEbnfOpts(gpa, src_code, .{ .permissive = true }) catch |e2| switch (e2) {
+            Error.SyntaxError, Error.UndefinedSymbol => return, // still invalid; skip silently
+            else => return e2,
+        },
+        else => return e,
+    };
+    defer astv.deinit();
+    try std.testing.expect(astv.rules.len > 0);
+    // Basic generate sanity if we can resolve start rule from first rule name.
+    const start_rule = astv.rules[0].name;
+    var gen = generateZig(gpa, &astv, .{ .backend = .RecursiveDescent, .module_name = "gql_embedded", .start_rule = start_rule }) catch |e| switch (e) {
+        // If advanced validations fail (e.g., left recursion) still allow parse test to pass.
+        Error.LeftRecursion, Error.EmptyRepetition, Error.UnreachableRule => return,
+        else => return e,
+    };
+    defer gen.deinit(gpa);
+    try std.testing.expect(gen.files.len > 0);
 }
 
 // Build test: generate code for integer grammar and compile it with zig.
@@ -472,30 +532,15 @@ test "build generated integer module" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // Write generated files
-    for (gen.files) |f| {
-        if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
-            if (idx > 0) try tmp.dir.createDirPath(io(), f.path[0..idx]);
-        }
-        var wf = try tmp.dir.createFile(io(), f.path, .{});
-        defer wf.close(io());
-        try wf.writeStreamingAll(io(), f.contents);
-    }
+    try writeGeneratedFiles(tmp.dir, gen.files);
     // Add a tiny main that calls recognize_integer.
     const main_code =
         \\const std = @import("std");
         \\const gen = @import("integer_gen_build/mod.zig");
         \\pub fn main() !void { try gen.recognize_integer("+42"); }
     ;
-    var main_file = try tmp.dir.createFile(io(), "main.zig", .{});
-    defer main_file.close(io());
-    try main_file.writeStreamingAll(io(), main_code);
-    // Compile.
-    var child = try std.process.spawn(io(), .{
-        .argv = &[_][]const u8{ "zig", "build-exe", "main.zig" },
-        .cwd = .{ .dir = tmp.dir },
-    });
-    const term = try child.wait(io());
-    try std.testing.expect(term == .exited and term.exited == 0);
+    // Compile and run.
+    try std.testing.expect(try writeMainAndCompileRun(tmp.dir, gpa, main_code));
 }
 
 // Optional second build test for integer_set grammar.
@@ -513,59 +558,41 @@ test "build generated integer_set module" {
     try std.testing.expect(gen.files.len > 0);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for (gen.files) |f| {
-        if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
-            if (idx > 0) try tmp.dir.createDirPath(io(), f.path[0..idx]);
-        }
-        var wf = try tmp.dir.createFile(io(), f.path, .{});
-        defer wf.close(io());
-        try wf.writeStreamingAll(io(), f.contents);
-    }
+    try writeGeneratedFiles(tmp.dir, gen.files);
     const main_code =
         \\const std = @import("std");
         \\const gen = @import("integer_set_gen_build/mod.zig");
         \\pub fn main() !void { try gen.recognize_integer_set("{1,2}"); }
     ;
-    var main_file = try tmp.dir.createFile(io(), "main.zig", .{});
-    defer main_file.close(io());
-    try main_file.writeStreamingAll(io(), main_code);
-    var child = try std.process.spawn(io(), .{
-        .argv = &[_][]const u8{ "zig", "build-exe", "main.zig" },
-        .cwd = .{ .dir = tmp.dir },
-    });
-    const term = try child.wait(io());
-    try std.testing.expect(term == .exited and term.exited == 0);
+    try std.testing.expect(try writeMainAndCompileRun(tmp.dir, gpa, main_code));
 }
 
 // Verify stub header comment lists synthetic stubs when permissive mode inserts them.
 test "stub emitter adds synthetic stub header" {
     const gpa = std.testing.allocator;
-    const cwd = std.Io.Dir.cwd();
-    if (cwd.access(io(), "gql.ebnf", .{})) |_| {
-        const src_code = try cwd.readFileAlloc(io(), "gql.ebnf", gpa, .limited(64 * 1024 * 1024));
-        defer gpa.free(src_code);
-        var astv = parseEbnfOpts(gpa, src_code, .{ .permissive = true }) catch return; // skip if still invalid
-        defer astv.deinit();
-        if (astv.rules.len == 0) return; // nothing
-        const start_rule = astv.rules[0].name;
-        var gen = generateZig(gpa, &astv, .{ .backend = .RecursiveDescent, .module_name = "gql_stub_check", .start_rule = start_rule }) catch return; // allow validation errors skip
-        defer gen.deinit(gpa);
-        // Find mod.zig file
-        var found = false;
-        for (gen.files) |f| {
-            if (std.mem.endsWith(u8, f.path, "/mod.zig")) {
-                found = true;
-                // Expect the header marker when any synthetic stub present
-                if (astv.rules.len > 0) {
-                    if (std.mem.indexOf(u8, f.contents, "synthetic stub rule list") == null) {
-                        // Failing expectation indicates regression
-                        return error.TestUnexpectedResult;
-                    }
+    const src_code = (try readFileIfExists(gpa, "gql.ebnf")) orelse return; // missing; skip
+    defer gpa.free(src_code);
+    var astv = parseEbnfOpts(gpa, src_code, .{ .permissive = true }) catch return; // skip if still invalid
+    defer astv.deinit();
+    if (astv.rules.len == 0) return; // nothing
+    const start_rule = astv.rules[0].name;
+    var gen = generateZig(gpa, &astv, .{ .backend = .RecursiveDescent, .module_name = "gql_stub_check", .start_rule = start_rule }) catch return; // allow validation errors skip
+    defer gen.deinit(gpa);
+    // Find mod.zig file
+    var found = false;
+    for (gen.files) |f| {
+        if (std.mem.endsWith(u8, f.path, "/mod.zig")) {
+            found = true;
+            // Expect the header marker when any synthetic stub present
+            if (astv.rules.len > 0) {
+                if (std.mem.indexOf(u8, f.contents, "synthetic stub rule list") == null) {
+                    // Failing expectation indicates regression
+                    return error.TestUnexpectedResult;
                 }
             }
         }
-        try std.testing.expect(found);
-    } else |_| return; // missing file; skip
+    }
+    try std.testing.expect(found);
 }
 
 // Negative recognize test: feed invalid input to recognizer for integer grammar.
@@ -597,26 +624,15 @@ test "execute generated integer binary" {
     defer gen.deinit(gpa);
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for (gen.files) |f| {
-        if (std.mem.lastIndexOfScalar(u8, f.path, '/')) |idx| {
-            if (idx > 0) try tmp.dir.createDirPath(io(), f.path[0..idx]);
-        }
-        var wf = try tmp.dir.createFile(io(), f.path, .{});
-        defer wf.close(io());
-        try wf.writeStreamingAll(io(), f.contents);
-    }
+    try writeGeneratedFiles(tmp.dir, gen.files);
     const main_code =
         \\const std = @import("std");
         \\const gen = @import("integer_exec/mod.zig");
         \\pub fn main() !void { try gen.recognize_integer("-123"); }
     ;
-    var mf = try tmp.dir.createFile(io(), "main.zig", .{});
-    defer mf.close(io());
-    try mf.writeStreamingAll(io(), main_code);
-    var child = try std.process.spawn(io(), .{
-        .argv = &[_][]const u8{ "zig", "build-exe", "main.zig" },
-        .cwd = .{ .dir = tmp.dir },
-    });
-    const term = try child.wait(io());
-    try std.testing.expect(term == .exited and term.exited == 0);
+    try std.testing.expect(try writeMainAndCompileRun(tmp.dir, gpa, main_code));
+}
+
+test {
+    _ = bnf;
 }

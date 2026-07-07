@@ -66,6 +66,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    unit_tests.root_module.addAnonymousImport("iso_gql_bnf", .{
+        .root_source_file = b.path("testdata/ISO_IEC_39075.bnf.txt"),
+    });
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);

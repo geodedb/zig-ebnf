@@ -202,6 +202,62 @@ See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for a comprehensive ove
 
 ---
 
+## ISO BNF module (`bnf`)
+
+`src/bnf/bnf.zig` (exported as `ebnf.bnf`) is a second, independent parser for
+the ISO/IEC-standard "BNF" notation used by documents like ISO/IEC 39075
+(GQL) — as opposed to the EBNF dialect the rest of this package targets. It
+handles that notation's conventions directly: column-0 `<rule name> ::=`
+headers, `|`-separated alternatives, `[ ]` optional groups, `{ }` groups,
+postfix `...` repetition, `ALL_CAPS` reserved-word terminals, single
+character literals, raw multi-character symbol/punctuation literals (e.g.
+`::`, `<-[`, `<>`, `||`), and `!! See the Syntax Rules.` implementation-defined
+markers.
+
+```zig
+const ebnf = @import("ebnf");
+const bnf = ebnf.bnf;
+
+var g = try bnf.parse(gpa, source_text);
+defer g.deinit();
+
+// Fails with error.UndefinedNonterminal if any `<...>` reference has no
+// matching rule definition anywhere in the grammar.
+try g.validate(gpa);
+
+// Every ALL-CAPS reserved-word terminal referenced anywhere, deduplicated.
+var kw = try g.keywords(gpa);
+defer kw.deinit(gpa);
+
+// Deep-copies every rule from `other` into `self` (e.g. layering a
+// supplementary/vendor grammar extension on top of a base standard).
+try g.mergeFrom(gpa, &other_grammar);
+```
+
+`src/bnf/gen.zig` (`bnf.gen`) generates deterministic or randomized sample
+sentences from a parsed `Grammar`:
+
+```zig
+var prng = std.Random.DefaultPrng.init(seed);
+var cs = bnf.gen.ChoiceSource{ .prng = &prng };
+const sentence = try bnf.gen.generate(gpa, &g, .{ .start = "GQL-program", .max_depth = 40 }, &cs);
+defer gpa.free(sentence);
+```
+
+`ChoiceSource` can instead wrap a raw `[]const u8` byte buffer (`.bytes`),
+letting a fuzzer's input drive every choice/optional/repetition decision
+directly. Generation is termination-hardened against unit-production cycles
+and escape-less recursive rules: it always produces a finite sentence (or
+returns `error.NoFiniteDerivation` up front if the start rule truly has none),
+falling back to each region's minimal-cost derivation once a configurable
+`max_depth`/`max_len` budget is exceeded.
+
+This module is exercised end-to-end against the real, unmodified ISO/IEC
+39075 GQL BNF artifact vendored at `testdata/ISO_IEC_39075.bnf.txt` — see the
+`"bnf: parses the full ISO/IEC 39075 GQL artifact"` test in `src/bnf/bnf.zig`.
+
+---
+
 ## License
 
 MIT

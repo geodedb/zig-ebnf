@@ -1,6 +1,6 @@
 .{
     .name = .ebnf,
-    .version = "0.1.2",
+    .version = "0.2.1",
     .fingerprint = 0x39404527f41625ac,
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
@@ -13,6 +13,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "testdata",
         "LICENSE",
     },
 }
