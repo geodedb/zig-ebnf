@@ -1,6 +1,6 @@
 .{
     .name = .ebnf,
-    .version = "0.2.2",
+    .version = "0.2.3",
     .fingerprint = 0x39404527f41625ac,
     .minimum_zig_version = "0.15.1",
     .dependencies = .{

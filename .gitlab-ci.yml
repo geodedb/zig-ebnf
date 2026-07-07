@@ -29,7 +29,7 @@ include:
   - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.27.0
 
 variables:
-  ZIG_VERSION: "0.15.2"
+  ZIG_VERSION: "0.16.0"
 
 stages:
   - lint
