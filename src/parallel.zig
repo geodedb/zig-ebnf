@@ -91,7 +91,7 @@ pub fn parallelProcessRules(
     }
 
     const pool = getPool();
-    const chunk_size = @max(THRESHOLD, rules.len / MAX_CHUNKS);
+    const chunk_size = @max(THRESHOLD, std.math.divCeil(usize, rules.len, MAX_CHUNKS) catch unreachable);
 
     var chunks: [MAX_CHUNKS]RuleChunk(T) = undefined;
     var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
@@ -169,7 +169,7 @@ pub fn parallelCount(
     }
 
     const pool = getPool();
-    const chunk_size = @max(THRESHOLD, items.len / MAX_CHUNKS);
+    const chunk_size = @max(THRESHOLD, std.math.divCeil(usize, items.len, MAX_CHUNKS) catch unreachable);
 
     var chunks: [MAX_CHUNKS]CountChunk(T) = undefined;
     var batch: [MAX_CHUNKS]tp.BatchTask = undefined;
@@ -213,4 +213,24 @@ test "parallel count" {
         }
     }.isEven);
     try std.testing.expectEqual(@as(usize, 5), count);
+}
+
+test "parallel operations process all tail elements across chunk boundaries" {
+    defer deinitPool();
+    const accept = struct {
+        fn call(_: usize) bool {
+            return true;
+        }
+    }.call;
+    for ([_]usize{ 7, 8, 63, 64, 65, 511, 512, 513, 1000, 4097 }) |length| {
+        const items = try std.testing.allocator.alloc(usize, length);
+        defer std.testing.allocator.free(items);
+        @memset(items, 1);
+        const results = try std.testing.allocator.alloc(bool, length);
+        defer std.testing.allocator.free(results);
+        @memset(results, false);
+        try std.testing.expectEqual(length, parallelProcessRules(usize, items, results, accept));
+        for (results) |result| try std.testing.expect(result);
+        try std.testing.expectEqual(length, parallelCount(usize, items, accept));
+    }
 }
