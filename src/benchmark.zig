@@ -15,7 +15,7 @@ pub fn main() !void {
     const gpa = std.heap.page_allocator;
 
     // Benchmark integer grammar parse and codegen
-    const int_code = @embedFile("../examples/integer.ebnf");
+    const int_code = @embedFile("integer_grammar");
     var start_ns = nanoTimestamp();
     var ast_int = try lib.parseEbnf(gpa, int_code);
     var parse_end_ns = nanoTimestamp();
@@ -34,7 +34,7 @@ pub fn main() !void {
     var rec_start_ns = nanoTimestamp();
     const result = try lib.recognize(gpa, &ast_int, "integer", "+142");
     var rec_end_ns = nanoTimestamp();
-    _ = result;
+    if (!result.ok) return error.IntegerBenchmarkRecognitionFailed;
 
     const parse_us = @divTrunc(parse_end_ns - start_ns, 1000);
     const gen_us = @divTrunc(gen_end_ns - parse_end_ns, 1000);
@@ -44,7 +44,7 @@ pub fn main() !void {
     std.debug.print("integer recognize: {d} us\n", .{rec_us});
 
     // Benchmark integer_set grammar parse and generate
-    const intset_code = @embedFile("../examples/integer_set.ebnf");
+    const intset_code = @embedFile("integer_set_grammar");
     start_ns = nanoTimestamp();
     var ast_set = try lib.parseEbnf(gpa, intset_code);
     parse_end_ns = nanoTimestamp();
@@ -60,7 +60,7 @@ pub fn main() !void {
     rec_start_ns = nanoTimestamp();
     const set_result = try lib.recognize(gpa, &ast_set, "integer_set", "{5,-2,11}");
     rec_end_ns = nanoTimestamp();
-    _ = set_result;
+    if (!set_result.ok) return error.IntegerSetBenchmarkRecognitionFailed;
 
     const parse_set_us = @divTrunc(parse_end_ns - start_ns, 1000);
     const gen_set_us = @divTrunc(gen_end_ns - parse_end_ns, 1000);
