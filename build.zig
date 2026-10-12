@@ -72,6 +72,8 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    const parallel_tests = b.addTest(.{ .root_module = parallel_mod });
+    test_step.dependOn(&b.addRunArtifact(parallel_tests).step);
 
     // Benchmark executable
     const benchmark = b.addExecutable(.{
