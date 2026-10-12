@@ -6,6 +6,23 @@ const parallel = @import("parallel");
 const WARMUP_RUNS = 3;
 const BENCH_RUNS = 5;
 
+const Timer = struct {
+    started_ns: i96,
+
+    fn now() i96 {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        return std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
+    }
+
+    fn start() Timer {
+        return .{ .started_ns = now() };
+    }
+
+    fn read(self: *Timer) u64 {
+        return @intCast(@max(now() - self.started_ns, 0));
+    }
+};
+
 const BenchResult = struct {
     seq_ns: u64,
     par_ns: u64,
@@ -56,7 +73,7 @@ fn benchParallelRuleProcessing(allocator: std.mem.Allocator, num_rules: usize) !
     // Sequential
     var seq_total: u64 = 0;
     for (0..BENCH_RUNS) |_| {
-        var timer = try std.time.Timer.start();
+        var timer = Timer.start();
         var valid_count: usize = 0;
         for (rules, 0..) |rule, i| {
             results[i] = isValidRule(rule);
@@ -69,7 +86,7 @@ fn benchParallelRuleProcessing(allocator: std.mem.Allocator, num_rules: usize) !
     // Parallel
     var par_total: u64 = 0;
     for (0..BENCH_RUNS) |_| {
-        var timer = try std.time.Timer.start();
+        var timer = Timer.start();
         const count = parallel.parallelProcessRules(Rule, rules, results, isValidRule);
         par_total += timer.read();
         std.mem.doNotOptimizeAway(&count);
@@ -87,7 +104,7 @@ fn benchParallelCount(allocator: std.mem.Allocator, size: usize) !BenchResult {
     // Sequential
     var seq_total: u64 = 0;
     for (0..BENCH_RUNS) |_| {
-        var timer = try std.time.Timer.start();
+        var timer = Timer.start();
         var count: usize = 0;
         for (items) |item| {
             if (isEven(item)) count += 1;
@@ -99,7 +116,7 @@ fn benchParallelCount(allocator: std.mem.Allocator, size: usize) !BenchResult {
     // Parallel
     var par_total: u64 = 0;
     for (0..BENCH_RUNS) |_| {
-        var timer = try std.time.Timer.start();
+        var timer = Timer.start();
         const count = parallel.parallelCount(i32, items, isEven);
         par_total += timer.read();
         std.mem.doNotOptimizeAway(&count);
@@ -122,7 +139,8 @@ fn printBenchResult(name: []const u8, size: usize, result: BenchResult) void {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer parallel.deinitPool();
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

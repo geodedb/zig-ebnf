@@ -85,6 +85,12 @@ pub fn build(b: *std.Build) void {
     benchmark.root_module.addAnonymousImport("ebnfgen", .{
         .root_source_file = b.path("src/lib.zig"),
     });
+    benchmark.root_module.addAnonymousImport("integer_grammar", .{
+        .root_source_file = b.path("examples/integer.ebnf"),
+    });
+    benchmark.root_module.addAnonymousImport("integer_set_grammar", .{
+        .root_source_file = b.path("examples/integer_set.ebnf"),
+    });
 
     const bench_install = b.addInstallArtifact(benchmark, .{});
     b.step("bench", "Build benchmark executable").dependOn(&bench_install.step);
@@ -107,4 +113,5 @@ pub fn build(b: *std.Build) void {
     });
     const run_parallel_bench = b.addRunArtifact(parallel_bench_exe);
     parallel_bench_step.dependOn(&run_parallel_bench.step);
+    b.step("bench-parallel-check", "Compile parallel benchmark").dependOn(&parallel_bench_exe.step);
 }
