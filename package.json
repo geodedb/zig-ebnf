@@ -9,7 +9,7 @@
     "autoprefixer": "10.6.2",
     "http-server": "14.1.1",
     "image-size": "2.1.0",
-    "postcss": "8.5.32",
+    "postcss": "8.5.33",
     "pptxgenjs": "4.0.1",
     "prismjs": "1.30.0",
     "sharp": "0.35.5",
