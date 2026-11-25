@@ -1,0 +1,12 @@
+.{
+    .fingerprint = 0x27619082e7db701e,
+    .name = .spice,
+    .version = "0.0.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE.txt",
+        "README.md",
+    },
+}
